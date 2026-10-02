@@ -1,0 +1,58 @@
+{
+  "users": [
+    {
+      "id": "demo-user",
+      "name": "Ava Morgan",
+      "email": "ava@ashmie.io",
+      "password": "demo123",
+      "plan": "Growth",
+      "role": "Product Lead"
+    },
+    {
+      "id": "user-1790935960227",
+      "name": "Lena Park",
+      "email": "lena@ashmie.io",
+      "password": "secure123",
+      "plan": "Starter",
+      "role": "Team member"
+    }
+  ],
+  "projects": [
+    {
+      "id": "project-1790935960270",
+      "name": "Brand refresh",
+      "description": "New positioning sprint",
+      "owner": "demo-user",
+      "status": "New",
+      "progress": 25,
+      "due": "This week"
+    },
+    {
+      "id": "proj-1",
+      "name": "Northstar launch",
+      "description": "Launch positioning refresh",
+      "owner": "demo-user",
+      "status": "In review",
+      "progress": 82,
+      "due": "Today"
+    },
+    {
+      "id": "proj-2",
+      "name": "Growth experiments",
+      "description": "Acquire and iterate",
+      "owner": "demo-user",
+      "status": "Planning",
+      "progress": 64,
+      "due": "Thu"
+    },
+    {
+      "id": "proj-3",
+      "name": "Customer onboarding",
+      "description": "Better activation flow",
+      "owner": "demo-user",
+      "status": "On track",
+      "progress": 91,
+      "due": "Fri"
+    }
+  ]
+}
