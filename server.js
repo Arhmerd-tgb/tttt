@@ -1,7 +1,9 @@
 import express from 'express';
+import 'dotenv/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -9,6 +11,26 @@ const distPath = path.join(__dirname, 'dist');
 const dataDir = path.join(__dirname, 'data');
 const dataFile = path.join(dataDir, 'store.json');
 const port = Number(process.env.PORT) || 3001;
+const sessions = new Map();
+const defaultAdminSignupCodeHash = createHash('sha256').update('RAJI').digest('hex');
+
+function hashAdminSignupCode(code) {
+  return createHash('sha256').update(String(code)).digest('hex');
+}
+
+function isValidAdminSignupCode(code, storedHash) {
+  const expected = Buffer.from(storedHash, 'hex');
+  const provided = Buffer.from(hashAdminSignupCode(code), 'hex');
+  return expected.length === provided.length && timingSafeEqual(expected, provided);
+}
+
+const defaultPaymentDetails = {
+  bankName: 'Add your bank name in Admin settings',
+  accountName: 'ASHMIE CAKES & MORE',
+  accountNumber: 'Add account number in Admin settings',
+  instructions: 'Use your order number as the transfer reference, then confirm your payment below.',
+  deliveryFee: 2500,
+};
 
 const demoUser = {
   id: 'demo-user',
@@ -19,18 +41,61 @@ const demoUser = {
   role: 'Product Lead',
 };
 
+const bakerySite = {
+  name: 'ASHMIE CAKES & MORE',
+  tagline: 'Fresh cakes, pastries, snacks and sweet moments for every celebration.',
+  description: 'Ashmie Cakes & More creates delightful cakes, pastries and snacks for birthdays, events and everyday treats across Nigeria.',
+  phone: '+234 806 577 0291',
+  email: 'ashmiecakesinfo@gmail.com',
+  whatsapp: '+234 806 577 0291',
+  address: 'Kano, Nigeria',
+};
+
+const bakeryCategories = [
+  { id: 'cakes', name: 'Cakes', image: 'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&w=900&q=80' },
+  { id: 'cupcakes', name: 'Cupcakes', image: 'https://images.unsplash.com/photo-1486427944299-d1955d23e34d?auto=format&fit=crop&w=900&q=80' },
+  { id: 'pastries', name: 'Pastries', image: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=900&q=80' },
+  { id: 'small-chops', name: 'Small Chops', image: 'https://images.unsplash.com/photo-1559847844-5315695dadae?auto=format&fit=crop&w=900&q=80' },
+  { id: 'snacks', name: 'Snacks', image: 'https://images.unsplash.com/photo-1514996937319-344454492b37?auto=format&fit=crop&w=900&q=80' },
+  { id: 'desserts', name: 'Desserts', image: 'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=900&q=80' },
+];
+
+const bakeryProducts = [
+  { id: 'strawberry-royale', name: 'Strawberry Royale Cake', category: 'cakes', price: 18000, featured: true, image: 'https://images.unsplash.com/photo-1558301211-0d8c8ddee6ec?auto=format&fit=crop&w=900&q=80', description: 'Soft vanilla sponge layered with fresh strawberry cream.' },
+  { id: 'choco-crumb', name: 'Choco Crumb Delight', category: 'cakes', price: 22000, featured: true, image: 'https://images.unsplash.com/photo-1565958011703-44f9829ba187?auto=format&fit=crop&w=900&q=80', description: 'Rich chocolate layers finished with glossy ganache.' },
+  { id: 'mini-cupcake-box', name: 'Mini Cupcake Box', category: 'cupcakes', price: 9500, featured: false, image: 'https://images.unsplash.com/photo-1486427944299-d1955d23e34d?auto=format&fit=crop&w=900&q=80', description: 'Assorted pastel cupcakes for parties and gifting.' },
+  { id: 'beef-rolls', name: 'Beef Rolls', category: 'pastries', price: 7000, featured: false, image: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=900&q=80', description: 'Flaky pastry rolls filled with spiced beef.' },
+  { id: 'small-chops-mix', name: 'Small Chops Mix', category: 'small-chops', price: 16000, featured: true, image: 'https://images.unsplash.com/photo-1559847844-5315695dadae?auto=format&fit=crop&w=900&q=80', description: 'Signature party platter with puff, samosa and chicken bites.' },
+  { id: 'plantain-chips', name: 'Crunchy Plantain Chips', category: 'snacks', price: 4500, featured: false, image: 'https://images.unsplash.com/photo-1514996937319-344454492b37?auto=format&fit=crop&w=900&q=80', description: 'Crispy, lightly seasoned and perfect for gifting.' },
+  { id: 'fruit-salad-cup', name: 'Fruit Salad Cups', category: 'desserts', price: 6000, featured: false, image: 'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=900&q=80', description: 'Fresh fruit dessert cups full of colour and taste.' },
+  { id: 'birthday-bundle', name: 'Birthday Celebration Pack', category: 'cakes', price: 26000, featured: true, image: 'https://images.unsplash.com/photo-1535141192574-5d4897c12636?auto=format&fit=crop&w=900&q=80', description: 'Festive celebration cake with custom finishing.' },
+];
+
+const bakeryTraining = [
+  { id: 'cake-basic', title: 'Cake Making Fundamentals', duration: '2 Weeks', fee: 35000, seats: 18, date: '12 Oct 2026', location: 'Lagos Studio', status: 'Open', topics: ['Cake mixing', 'Batter science', 'Basic decoration'] },
+  { id: 'decor-masterclass', title: 'Advanced Decoration Masterclass', duration: '3 Weeks', fee: 48000, seats: 12, date: '20 Oct 2026', location: 'Yaba Training Hub', status: 'Open', topics: ['Buttercream art', 'Fondant detailing', 'Event styling'] },
+  { id: 'snack-production', title: 'Snacks & Pastry Production', duration: '4 Weeks', fee: 55000, seats: 10, date: '02 Nov 2026', location: 'Lekki Academy', status: 'Open', topics: ['Small chops production', 'Pastry folding', 'Packaging'] },
+];
+
+const galleryItems = [
+  { title: 'Wedding Cakes', image: 'https://images.unsplash.com/photo-1558301211-0d8c8ddee6ec?auto=format&fit=crop&w=900&q=80' },
+  { title: 'Custom Cupcakes', image: 'https://images.unsplash.com/photo-1486427944299-d1955d23e34d?auto=format&fit=crop&w=900&q=80' },
+  { title: 'Pastry Box', image: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=900&q=80' },
+  { title: 'Party Snacks', image: 'https://images.unsplash.com/photo-1559847844-5315695dadae?auto=format&fit=crop&w=900&q=80' },
+];
+
 const dashboardData = {
   summary: [
-    { label: 'Revenue', value: '$82.4k', change: '+21.4%' },
-    { label: 'Conversion', value: '6.8%', change: '+1.3%' },
-    { label: 'Activation', value: '74%', change: '+8.2%' },
+    { label: 'Today sales', value: '₦184,500', change: '+18.4%' },
+    { label: 'Orders', value: '126', change: '+12.8%' },
+    { label: 'Training seats', value: '42', change: '+9%' },
   ],
   pipeline: [
-    { name: 'Product design', progress: 84, owner: 'Ava' },
-    { name: 'Marketing launch', progress: 67, owner: 'Leo' },
-    { name: 'Customer onboarding', progress: 91, owner: 'Mina' },
+    { name: 'Wedding cake orders', progress: 88, owner: 'Kitchen team' },
+    { name: 'Bread & pastry prep', progress: 71, owner: 'Bakery team' },
+    { name: 'Training registration', progress: 64, owner: 'Growth team' },
   ],
-  tasks: ['Finalize launch plan', 'Review conversion funnel', 'Ship weekly product update'],
+  tasks: ['Confirm delivery schedule', 'Review weekend mixer stock', 'Approve training applicants'],
 };
 
 const pricingData = {
@@ -61,6 +126,11 @@ const pricingData = {
 
 const seedStore = {
   users: [demoUser],
+  paymentDetails: defaultPaymentDetails,
+  orders: [],
+  reviews: [],
+  chatMessages: [],
+  adminSignupCodeHash: defaultAdminSignupCodeHash,
   projects: [
     { id: 'proj-1', name: 'Northstar launch', description: 'Launch positioning refresh', owner: 'demo-user', status: 'In review', progress: 82, due: 'Today' },
     { id: 'proj-2', name: 'Growth experiments', description: 'Acquire and iterate', owner: 'demo-user', status: 'Planning', progress: 64, due: 'Thu' },
@@ -72,6 +142,13 @@ function normalizeStore(store = {}) {
   return {
     users: Array.isArray(store.users) ? store.users : [],
     projects: Array.isArray(store.projects) ? store.projects : [],
+    paymentDetails: { ...defaultPaymentDetails, ...(store.paymentDetails || {}) },
+    orders: Array.isArray(store.orders) ? store.orders : [],
+    reviews: Array.isArray(store.reviews) ? store.reviews : [],
+    chatMessages: Array.isArray(store.chatMessages) ? store.chatMessages : [],
+    adminSignupCodeHash: typeof store.adminSignupCodeHash === 'string' && store.adminSignupCodeHash.length === 64
+      ? store.adminSignupCodeHash
+      : defaultAdminSignupCodeHash,
   };
 }
 
@@ -118,25 +195,46 @@ function toPublicUser(user) {
     name: user.name,
     email: user.email,
     plan: user.plan || 'Starter',
-    role: user.role || 'Team member',
+    role: user.role || 'customer',
   };
 }
 
 function createToken(user) {
-  return `token_${user.id}_${Date.now()}`;
+  const token = randomUUID();
+  sessions.set(token, user.id);
+  return token;
 }
 
 function resolveUserFromToken(token) {
-  if (!token || !token.startsWith('token_')) return null;
-  const id = token.split('_')[1];
+  if (!token) return null;
+  const id = sessions.get(token);
+  if (!id) return null;
   const store = readDataStore();
   return store.users.find((user) => user.id === id) || null;
+}
+
+function requireUser(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const user = resolveUserFromToken(token);
+
+  if (!user) return res.status(401).json({ message: 'Authentication required.' });
+  req.user = user;
+  req.token = token;
+  return next();
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') return res.status(403).json({ message: 'Administrator access required.' });
+  return next();
 }
 
 export function createApp() {
   const app = express();
 
   app.disable('x-powered-by');
+  app.set('trust proxy', true);
+  app.use('/api/paystack/webhook', express.raw({ type: 'application/json' }));
   app.use(express.json());
 
   app.get('/api/health', (_req, res) => {
@@ -152,19 +250,456 @@ export function createApp() {
     res.json({
       features: [
         {
-          title: 'Strategy-first product design',
-          description: 'Turn ideas into high-conversion experiences.',
+          title: 'Bespoke celebration cakes',
+          description: 'Custom cakes for birthdays, weddings and corporate events.',
         },
         {
-          title: 'Fast build system',
-          description: 'Ship updates quickly with Vite and a clean architecture.',
+          title: 'Fresh pastry and snack packs',
+          description: 'Perfect for gifting, events and daily family treats.',
         },
         {
-          title: 'API-ready foundation',
-          description: 'Connect your frontend to real services when you are ready.',
+          title: 'Hands-on baking training',
+          description: 'Practical training for aspiring bakers and food entrepreneurs.',
         },
       ],
     });
+  });
+
+  app.get('/api/site', (_req, res) => {
+    res.json({
+      site: bakerySite,
+      categories: bakeryCategories,
+      products: bakeryProducts,
+      trainings: bakeryTraining,
+      gallery: galleryItems,
+    });
+  });
+
+  app.get('/api/categories', (_req, res) => {
+    res.json({ categories: bakeryCategories });
+  });
+
+  app.get('/api/products', (_req, res) => {
+    res.json({ products: bakeryProducts });
+  });
+
+  app.get('/api/reviews', (req, res) => {
+    const { reviews = [] } = readDataStore();
+    const productId = String(req.query.productId || '').trim();
+    const matchingReviews = reviews
+      .filter((review) => !productId || review.productId === productId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    res.json({ reviews: matchingReviews.map((review) => {
+      const publicReview = { ...review };
+      delete publicReview.userId;
+      return publicReview;
+    }) });
+  });
+
+  app.get('/api/chat/messages', requireUser, (req, res) => {
+    let conversationId = req.user.id;
+    if (req.user.role === 'admin') {
+      conversationId = String(req.query.conversationId || '').trim();
+      const customer = readDataStore().users.find((user) => user.id === conversationId && user.role !== 'admin');
+      if (!customer) return res.status(404).json({ message: 'Customer conversation not found.' });
+    }
+
+    const store = readDataStore();
+    const messages = store.chatMessages.filter((message) => message.conversationId === conversationId);
+    if (req.user.role === 'admin') {
+      let changed = false;
+      for (const message of messages) {
+        if (message.senderRole !== 'admin' && !message.readByAdmin) {
+          message.readByAdmin = true;
+          changed = true;
+        }
+      }
+      if (changed) writeDataStore(store);
+    }
+    return res.json({
+      conversationId,
+      messages,
+    });
+  });
+
+  app.get('/api/admin/chat/conversations', requireUser, requireAdmin, (_req, res) => {
+    const { chatMessages = [], users = [] } = readDataStore();
+    const customers = new Map(users.filter((user) => user.role !== 'admin').map((user) => [user.id, user]));
+    const latestByConversation = new Map();
+    for (const message of chatMessages) {
+      const previous = latestByConversation.get(message.conversationId);
+      if (!previous || previous.createdAt < message.createdAt) latestByConversation.set(message.conversationId, message);
+    }
+
+    const conversations = [...latestByConversation.entries()]
+      .map(([conversationId, latestMessage]) => {
+        const customer = customers.get(conversationId);
+        if (!customer) return null;
+        return {
+          conversationId,
+          customerName: customer.name,
+          customerEmail: customer.email,
+          latestMessage: latestMessage.body,
+          updatedAt: latestMessage.createdAt,
+          unreadCount: chatMessages.filter((message) => message.conversationId === conversationId && message.senderRole !== 'admin' && !message.readByAdmin).length,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return res.json({ conversations });
+  });
+
+  app.post('/api/chat/messages', requireUser, (req, res) => {
+    const body = String(req.body?.body || '').trim();
+    if (body.length < 1 || body.length > 2000) {
+      return res.status(400).json({ message: 'Message must be between 1 and 2000 characters.' });
+    }
+
+    let conversationId = req.user.id;
+    if (req.user.role === 'admin') {
+      conversationId = String(req.body?.conversationId || '').trim();
+      const customer = readDataStore().users.find((user) => user.id === conversationId && user.role !== 'admin');
+      if (!customer) return res.status(404).json({ message: 'Customer conversation not found.' });
+    }
+
+    const store = readDataStore();
+    const message = {
+      id: `message-${randomUUID()}`,
+      conversationId,
+      senderId: req.user.id,
+      senderRole: req.user.role === 'admin' ? 'admin' : 'customer',
+      senderName: req.user.name,
+      body,
+      createdAt: new Date().toISOString(),
+      readByAdmin: req.user.role === 'admin',
+    };
+    store.chatMessages.push(message);
+    writeDataStore(store);
+    return res.status(201).json({ message });
+  });
+
+  app.post('/api/reviews', requireUser, (req, res) => {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ message: 'Administrator accounts cannot post customer reviews.' });
+    }
+
+    const productId = String(req.body?.productId || '').trim();
+    const rating = Number(req.body?.rating);
+    const comment = String(req.body?.comment || '').trim();
+    if (!bakeryProducts.some((product) => product.id === productId)) {
+      return res.status(404).json({ message: 'Product not found.' });
+    }
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ message: 'Choose a rating from 1 to 5.' });
+    }
+    if (comment.length < 3 || comment.length > 1000) {
+      return res.status(400).json({ message: 'Review must be between 3 and 1000 characters.' });
+    }
+
+    const store = readDataStore();
+    const existingReview = store.reviews.find((review) => review.productId === productId && review.userId === req.user.id);
+    const review = {
+      id: existingReview?.id || `review-${randomUUID()}`,
+      productId,
+      userId: req.user.id,
+      author: req.user.name,
+      rating,
+      comment,
+      createdAt: existingReview?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (existingReview) {
+      Object.assign(existingReview, review);
+    } else {
+      store.reviews.push(review);
+    }
+    writeDataStore(store);
+    return res.status(existingReview ? 200 : 201).json({ review });
+  });
+
+  app.get('/api/training', (_req, res) => {
+    res.json({ trainings: bakeryTraining });
+  });
+
+  app.get('/api/admin/overview', requireUser, requireAdmin, (_req, res) => {
+    const { orders = [], reviews = [], users = [] } = readDataStore();
+    const today = new Date().toISOString().slice(0, 10);
+    const todaysOrders = orders.filter((order) => String(order.createdAt || '').startsWith(today));
+    const paidOrders = orders.filter((order) => order.paymentStatus === 'success');
+    const revenue = paidOrders.reduce((total, order) => total + Number(order.total || 0), 0);
+    const customerCount = users.filter((user) => ['customer', 'student'].includes(user.role)).length;
+    const currency = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 0 });
+    res.json({
+      stats: [
+        { label: 'Paid revenue', value: currency.format(revenue), change: `${paidOrders.length} paid orders` },
+        { label: 'Total orders', value: String(orders.length), change: `${todaysOrders.length} placed today` },
+        { label: 'Customer accounts', value: String(customerCount), change: 'Registered customers' },
+        { label: 'Product reviews', value: String(reviews.length), change: 'Customer-submitted' },
+      ],
+      recentOrders: orders.slice(-5).reverse().map((order) => ({
+        id: order.id,
+        customer: order.customer,
+        total: order.total,
+        status: order.status,
+        paymentStatus: order.paymentStatus,
+      })),
+      recentReviews: reviews.slice(-5).reverse(),
+    });
+  });
+
+  app.patch('/api/admin/orders/:orderId/status', requireUser, requireAdmin, (req, res) => {
+    const transitions = {
+      'Awaiting approval': ['Approved', 'Rejected'],
+      Paid: ['Approved', 'Rejected'],
+      Approved: ['Processing', 'Rejected'],
+      Processing: ['Completed'],
+    };
+    const nextStatus = String(req.body?.status || '').trim();
+    const store = readDataStore();
+    const order = store.orders.find((entry) => entry.id === req.params.orderId);
+    if (!order) return res.status(404).json({ message: 'Order not found.' });
+    if (order.paymentStatus !== 'success') {
+      return res.status(409).json({ message: 'Only paid orders can be processed.' });
+    }
+    if (!transitions[order.status]?.includes(nextStatus)) {
+      return res.status(409).json({ message: `Cannot move this order from ${order.status} to ${nextStatus}.` });
+    }
+
+    order.status = nextStatus;
+    order.statusUpdatedAt = new Date().toISOString();
+    writeDataStore(store);
+    return res.json({ order: { id: order.id, status: order.status } });
+  });
+
+  app.get('/api/payment-details', (_req, res) => {
+    const { paymentDetails } = readDataStore();
+    res.json({ paymentDetails });
+  });
+
+  app.put('/api/admin/admin-signup-code', requireUser, requireAdmin, (req, res) => {
+    const code = String(req.body?.code || '').trim();
+    if (code.length < 4 || code.length > 64) {
+      return res.status(400).json({ message: 'Admin signup code must be between 4 and 64 characters.' });
+    }
+    const store = readDataStore();
+    store.adminSignupCodeHash = hashAdminSignupCode(code);
+    writeDataStore(store);
+    return res.json({ ok: true });
+  });
+
+  app.post('/api/payments/initialize', async (req, res) => {
+    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+    if (!secretKey) return res.status(503).json({ message: 'Online payment is not configured yet.' });
+
+    const { customer = {}, items = [], deliveryMethod = 'delivery', deliveryAddress = '' } = req.body || {};
+    const customerName = String(customer.name || '').trim();
+    const customerEmail = String(customer.email || '').trim().toLowerCase();
+    const customerPhone = String(customer.phone || '').trim();
+    const address = String(deliveryAddress || '').trim();
+    if (!customerName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail) || !customerPhone) {
+      return res.status(400).json({ message: 'Enter a name, valid email address, and phone number.' });
+    }
+    if (!Array.isArray(items) || !items.length || items.length > 20) {
+      return res.status(400).json({ message: 'Your cart is empty or contains too many products.' });
+    }
+    if (!['delivery', 'pickup'].includes(deliveryMethod)) {
+      return res.status(400).json({ message: 'Choose delivery or shop pickup.' });
+    }
+    if (deliveryMethod === 'delivery' && !address) {
+      return res.status(400).json({ message: 'A delivery address is required.' });
+    }
+
+    const pricedItems = [];
+    for (const entry of items) {
+      const product = bakeryProducts.find((item) => item.id === String(entry.id));
+      const quantity = Number(entry.quantity);
+      if (!product || !Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
+        return res.status(400).json({ message: 'One or more cart items are invalid.' });
+      }
+      pricedItems.push({
+        id: product.id,
+        name: product.name,
+        quantity,
+        unitPrice: product.price,
+        total: product.price * quantity,
+      });
+    }
+
+    const store = readDataStore();
+    const subtotal = pricedItems.reduce((sum, item) => sum + item.total, 0);
+    const deliveryFee = deliveryMethod === 'delivery' ? Number(store.paymentDetails.deliveryFee) || 0 : 0;
+    const total = subtotal + deliveryFee;
+    const reference = `ASH-${Date.now()}-${randomUUID()}`;
+    const order = {
+      id: `ORD-${randomUUID()}`,
+      reference,
+      customer: customerName,
+      email: customerEmail,
+      phone: customerPhone,
+      deliveryMethod,
+      deliveryAddress: deliveryMethod === 'delivery' ? address : '',
+      items: pricedItems,
+      subtotal,
+      deliveryFee,
+      total,
+      paymentStatus: 'pending',
+      status: 'Awaiting payment',
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      const providerResponse = await fetch('https://api.paystack.co/transaction/initialize', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: customerEmail,
+          amount: Math.round(total * 100),
+          currency: 'NGN',
+          reference,
+          callback_url: process.env.PAYSTACK_CALLBACK_URL || `${req.protocol}://${req.get('host')}/payment/callback`,
+          metadata: {
+            order_id: order.id,
+            customer_name: customerName,
+            customer_phone: customerPhone,
+            delivery_method: deliveryMethod,
+          },
+        }),
+      });
+      const result = await providerResponse.json();
+      if (!providerResponse.ok || !result.status || !result.data?.authorization_url) {
+        return res.status(502).json({ message: result.message || 'Could not start Paystack checkout.' });
+      }
+
+      store.orders.push(order);
+      writeDataStore(store);
+      return res.status(201).json({ orderId: order.id, reference, authorizationUrl: result.data.authorization_url });
+    } catch (error) {
+      console.error('Paystack initialization failed:', error.message);
+      return res.status(502).json({ message: 'Could not reach Paystack. Please try again.' });
+    }
+  });
+
+  app.get('/api/payments/verify', async (req, res) => {
+    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+    if (!secretKey) return res.status(503).json({ message: 'Online payment is not configured yet.' });
+    const reference = String(req.query.reference || '').trim();
+    const store = readDataStore();
+    const order = store.orders.find((entry) => entry.reference === reference);
+    if (!order) return res.status(404).json({ message: 'Order reference not found.' });
+
+    try {
+      const providerResponse = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+        headers: { Authorization: `Bearer ${secretKey}` },
+      });
+      const result = await providerResponse.json();
+      if (!providerResponse.ok || !result.status) {
+        return res.status(502).json({ message: result.message || 'Unable to verify payment with Paystack.' });
+      }
+
+      const payment = result.data;
+      const amountMatches = Number(payment.amount) === Math.round(order.total * 100);
+      const paymentSucceeded = payment.status === 'success' && payment.currency === 'NGN' && amountMatches;
+      order.paymentStatus = paymentSucceeded ? 'success' : payment.status === 'failed' ? 'failed' : 'pending';
+      order.status = paymentSucceeded ? 'Awaiting approval' : order.paymentStatus === 'failed' ? 'Payment failed' : 'Awaiting payment';
+      if (paymentSucceeded) order.paidAt = new Date().toISOString();
+      writeDataStore(store);
+
+      return res.json({
+        orderId: order.id,
+        reference,
+        paymentStatus: order.paymentStatus,
+        amount: order.total,
+        deliveryMethod: order.deliveryMethod,
+      });
+    } catch (error) {
+      console.error('Paystack verification failed:', error.message);
+      return res.status(502).json({ message: 'Could not verify payment. Please contact the bakery before retrying.' });
+    }
+  });
+
+  app.post('/api/paystack/webhook', (req, res) => {
+    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+    const signature = req.headers['x-paystack-signature'];
+    if (!secretKey || !Buffer.isBuffer(req.body) || !signature) {
+      return res.status(401).json({ message: 'Invalid webhook signature.' });
+    }
+
+    const expectedSignature = createHmac('sha512', secretKey).update(req.body).digest();
+    const receivedSignature = Buffer.from(String(signature), 'hex');
+    if (receivedSignature.length !== expectedSignature.length || !timingSafeEqual(receivedSignature, expectedSignature)) {
+      return res.status(401).json({ message: 'Invalid webhook signature.' });
+    }
+
+    let event;
+    try {
+      event = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return res.status(400).json({ message: 'Invalid webhook payload.' });
+    }
+
+    if (event.event === 'charge.success') {
+      const payment = event.data || {};
+      const store = readDataStore();
+      const order = store.orders.find((entry) => entry.reference === payment.reference);
+      if (order && payment.status === 'success' && payment.currency === 'NGN' && Number(payment.amount) === Math.round(order.total * 100)) {
+        order.paymentStatus = 'success';
+        order.status = 'Awaiting approval';
+        order.paidAt = new Date().toISOString();
+        writeDataStore(store);
+      }
+    }
+
+    return res.json({ received: true });
+  });
+
+  app.put('/api/admin/payment-details', requireUser, requireAdmin, (req, res) => {
+    const { bankName = '', accountName = '', accountNumber = '', instructions = '', deliveryFee } = req.body || {};
+    const values = [bankName, accountName, accountNumber, instructions].map((value) => String(value).trim());
+    const normalizedDeliveryFee = Number(deliveryFee);
+    if (values.some((value) => !value) || !Number.isFinite(normalizedDeliveryFee) || normalizedDeliveryFee < 0) {
+      return res.status(400).json({ message: 'Complete all payment fields and enter a valid non-negative delivery fee.' });
+    }
+
+    const store = readDataStore();
+    store.paymentDetails = {
+      bankName: values[0],
+      accountName: values[1],
+      accountNumber: values[2],
+      instructions: values[3],
+      deliveryFee: normalizedDeliveryFee,
+    };
+    writeDataStore(store);
+    return res.json({ paymentDetails: store.paymentDetails });
+  });
+
+  app.post('/api/admin/admins', requireUser, requireAdmin, (req, res) => {
+    const { name = '', email = '', password = '' } = req.body || {};
+    const normalizedName = String(name).trim();
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedPassword = String(password).trim();
+    if (!normalizedName || !normalizedEmail || normalizedPassword.length < 8) {
+      return res.status(400).json({ message: 'Enter a name, valid email, and password of at least 8 characters.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({ message: 'Enter a valid email address.' });
+    }
+
+    const store = readDataStore();
+    if (store.users.some((user) => user.email.toLowerCase() === normalizedEmail)) {
+      return res.status(409).json({ message: 'An account with that email already exists.' });
+    }
+
+    const admin = {
+      id: `admin-${randomUUID()}`,
+      name: normalizedName,
+      email: normalizedEmail,
+      password: normalizedPassword,
+      role: 'admin',
+    };
+    store.users.push(admin);
+    writeDataStore(store);
+    return res.status(201).json({ user: toPublicUser(admin) });
   });
 
   app.get('/api/session', (req, res) => {
@@ -188,9 +723,28 @@ export function createApp() {
     }
 
     const store = readDataStore();
-    const user = store.users.find(
+    let user = store.users.find(
       (entry) => entry.email.toLowerCase() === normalizedEmail && entry.password === String(password)
     );
+
+    const adminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+    const adminPassword = String(process.env.ADMIN_PASSWORD || '');
+    if (adminEmail && adminPassword && normalizedEmail === adminEmail && String(password) === adminPassword) {
+      user = store.users.find((entry) => entry.email.toLowerCase() === adminEmail);
+      if (!user) {
+        user = {
+          id: `admin-${randomUUID()}`,
+          name: 'Ashmie Administrator',
+          email: adminEmail,
+          role: 'admin',
+        };
+        store.users.push(user);
+      } else {
+        user.role = 'admin';
+        delete user.password;
+      }
+      writeDataStore(store);
+    }
 
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials.' });
@@ -200,7 +754,7 @@ export function createApp() {
   });
 
   app.post('/api/auth/signup', (req, res) => {
-    const { name = '', email = '', password = '' } = req.body || {};
+    const { name = '', email = '', password = '', accountType = 'customer', adminCode = '' } = req.body || {};
     const normalizedName = String(name).trim();
     const normalizedEmail = String(email).trim().toLowerCase();
     const normalizedPassword = String(password).trim();
@@ -208,8 +762,20 @@ export function createApp() {
     if (!normalizedName || !normalizedEmail || !normalizedPassword) {
       return res.status(400).json({ message: 'Name, email, and password are required.' });
     }
+    if (normalizedPassword.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({ message: 'Enter a valid email address.' });
+    }
+    if (!['customer', 'admin'].includes(accountType)) {
+      return res.status(400).json({ message: 'Choose a valid account type.' });
+    }
 
     const store = readDataStore();
+    if (accountType === 'admin' && !isValidAdminSignupCode(String(adminCode).trim(), store.adminSignupCodeHash)) {
+      return res.status(403).json({ message: 'The admin signup code is incorrect.' });
+    }
     const existingUser = store.users.find((user) => user.email.toLowerCase() === normalizedEmail);
 
     if (existingUser) {
@@ -217,12 +783,12 @@ export function createApp() {
     }
 
     const user = {
-      id: `user-${Date.now()}`,
+      id: `user-${randomUUID()}`,
       name: normalizedName,
       email: normalizedEmail,
       password: normalizedPassword,
       plan: 'Starter',
-      role: 'Team member',
+      role: accountType,
     };
 
     store.users.push(user);
@@ -231,7 +797,8 @@ export function createApp() {
     return res.json({ token: createToken(user), user: toPublicUser(user) });
   });
 
-  app.post('/api/auth/logout', (_req, res) => {
+  app.post('/api/auth/logout', requireUser, (req, res) => {
+    sessions.delete(req.token);
     res.json({ ok: true, message: 'Signed out successfully.' });
   });
 
