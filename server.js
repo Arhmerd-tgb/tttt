@@ -68,6 +68,13 @@ const seedStore = {
   ],
 };
 
+function normalizeStore(store = {}) {
+  return {
+    users: Array.isArray(store.users) ? store.users : [],
+    projects: Array.isArray(store.projects) ? store.projects : [],
+  };
+}
+
 function ensureDataStore() {
   fs.mkdirSync(dataDir, { recursive: true });
   if (!fs.existsSync(dataFile)) {
@@ -77,12 +84,32 @@ function ensureDataStore() {
 
 function readDataStore() {
   ensureDataStore();
-  return JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+
+  try {
+    const raw = fs.readFileSync(dataFile, 'utf8').trim();
+    if (!raw) {
+      throw new Error('Store file is empty.');
+    }
+
+    const parsed = JSON.parse(raw);
+    const normalized = normalizeStore(parsed);
+
+    if (!parsed || !Array.isArray(parsed.users) || !Array.isArray(parsed.projects)) {
+      writeDataStore(normalized);
+    }
+
+    return normalized;
+  } catch (error) {
+    console.warn('Data store is invalid or unreadable. Resetting to the default seed data.', error.message);
+    writeDataStore(seedStore);
+    return JSON.parse(JSON.stringify(seedStore));
+  }
 }
 
 function writeDataStore(store) {
   ensureDataStore();
-  fs.writeFileSync(dataFile, JSON.stringify(store, null, 2));
+  const normalizedStore = normalizeStore(store);
+  fs.writeFileSync(dataFile, JSON.stringify(normalizedStore, null, 2));
 }
 
 function toPublicUser(user) {
@@ -109,6 +136,7 @@ function resolveUserFromToken(token) {
 export function createApp() {
   const app = express();
 
+  app.disable('x-powered-by');
   app.use(express.json());
 
   app.get('/api/health', (_req, res) => {
@@ -285,6 +313,15 @@ export function createApp() {
       `);
     });
   }
+
+  app.use((req, res) => {
+    res.status(404).json({ message: `Route not found: ${req.method} ${req.originalUrl}` });
+  });
+
+  app.use((error, _req, res, _next) => {
+    console.error('Unhandled application error:', error);
+    res.status(500).json({ message: 'Internal server error.' });
+  });
 
   return app;
 }

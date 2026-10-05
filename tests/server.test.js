@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createApp } from '../server.js';
+
+function createUniqueEmail() {
+  return `user-${Date.now()}-${Math.random().toString(16).slice(2)}@ashmie.io`;
+}
 
 async function request(app, path, options = {}) {
   const server = app.listen(0);
@@ -54,15 +60,16 @@ test('GET /api/workspace returns a workspace project list', async () => {
 
 test('POST /api/auth/signup creates a user and persists a project', async () => {
   const app = createApp();
+  const uniqueEmail = createUniqueEmail();
 
   const signupResponse = await request(app, '/api/auth/signup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Lena Park', email: 'lena@ashmie.io', password: 'secure123' }),
+    body: JSON.stringify({ name: 'Lena Park', email: uniqueEmail, password: 'secure123' }),
   });
 
   assert.equal(signupResponse.response.status, 200);
-  assert.equal(signupResponse.body.user.email, 'lena@ashmie.io');
+  assert.equal(signupResponse.body.user.email, uniqueEmail);
 
   const projectResponse = await request(app, '/api/projects', {
     method: 'POST',
@@ -72,4 +79,27 @@ test('POST /api/auth/signup creates a user and persists a project', async () => 
 
   assert.equal(projectResponse.response.status, 200);
   assert.ok(projectResponse.body.project.name.includes('Brand refresh'));
+});
+
+test('GET /api/projects recovers when the data store is corrupted', async () => {
+  const dataDir = path.join(process.cwd(), 'data');
+  const dataFile = path.join(dataDir, 'store.json');
+  const previous = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
+
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(dataFile, '{broken json');
+
+  try {
+    const app = createApp();
+    const { response, body } = await request(app, '/api/projects');
+
+    assert.equal(response.status, 200);
+    assert.ok(Array.isArray(body.projects));
+  } finally {
+    if (previous === null) {
+      fs.rmSync(dataFile, { force: true });
+    } else {
+      fs.writeFileSync(dataFile, previous);
+    }
+  }
 });
