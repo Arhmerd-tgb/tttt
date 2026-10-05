@@ -4,12 +4,12 @@ const app = document.querySelector('#app');
 
 const defaultSite = {
   name: 'ASHMIE CAKES & MORE',
-  tagline: 'Fresh cakes, pastries, snacks and sweet moments for every celebration.',
+  tagline: 'Cakes, pastries & treats for every celebration.',
   description: 'Ashmie Cakes & More creates delightful cakes, pastries and snacks for birthdays, events and everyday treats across Nigeria.',
   phone: '+234 806 577 0291',
   email: 'ashmiecakesinfo@gmail.com',
   whatsapp: '+234 806 577 0291',
-  address: 'Kano, Nigeria',
+  address: 'Hotoro Behind Chula Fueling Station',
 };
 
 const defaultProducts = [
@@ -24,9 +24,9 @@ const defaultProducts = [
 ];
 
 const defaultTrainings = [
-  { id: 'cake-basic', title: 'Cake Making Fundamentals', duration: '2 Weeks', fee: 35000, seats: 18, date: '12 Oct 2026', location: 'Lagos Studio', status: 'Open', topics: ['Cake mixing', 'Batter science', 'Basic decoration'] },
-  { id: 'decor-masterclass', title: 'Advanced Decoration Masterclass', duration: '3 Weeks', fee: 48000, seats: 12, date: '20 Oct 2026', location: 'Yaba Training Hub', status: 'Open', topics: ['Buttercream art', 'Fondant detailing', 'Event styling'] },
-  { id: 'snack-production', title: 'Snacks & Pastry Production', duration: '4 Weeks', fee: 55000, seats: 10, date: '02 Nov 2026', location: 'Lekki Academy', status: 'Open', topics: ['Small chops production', 'Pastry folding', 'Packaging'] },
+  { id: 'cake-basic', title: 'Cake Making Fundamentals', duration: '2 Weeks', fee: 35000, seats: 18, date: '2026-10-12', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Cake mixing', 'Batter science', 'Basic decoration'] },
+  { id: 'decor-masterclass', title: 'Advanced Decoration Masterclass', duration: '3 Weeks', fee: 48000, seats: 12, date: '2026-10-20', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Buttercream art', 'Fondant detailing', 'Event styling'] },
+  { id: 'snack-production', title: 'Snacks & Pastry Production', duration: '4 Weeks', fee: 55000, seats: 10, date: '2026-11-02', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Small chops production', 'Pastry folding', 'Packaging'] },
 ];
 
 const state = {
@@ -35,9 +35,11 @@ const state = {
   products: [],
   categories: [],
   trainings: [],
+  trainingPortalOpen: true,
+  trainingEnrollments: [],
   reviews: [],
   orders: [],
-  adminOverview: { stats: [], recentOrders: [], recentReviews: [] },
+  adminOverview: { stats: [], recentOrders: [], recentReviews: [], products: [], trainings: [], trainingPortalOpen: true },
   site: { ...defaultSite },
   paymentDetails: {
     bankName: 'Add your bank name in Admin settings',
@@ -49,6 +51,8 @@ const state = {
   fulfillmentMethod: 'delivery',
   accountMode: 'login',
   authMessage: '',
+  authReturnPage: null,
+  pendingManualOrder: readStorage('ashmie_pending_manual_order', null),
   paymentResult: null,
   chatMessages: [],
   chatConversations: [],
@@ -73,8 +77,54 @@ function writeStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function showNotification(message, type = 'success') {
+  let region = document.querySelector('.notification-region');
+  if (!region) {
+    region = document.createElement('div');
+    region.className = 'notification-region';
+    region.setAttribute('aria-label', 'Notifications');
+    document.body.append(region);
+  }
+
+  const notification = document.createElement('div');
+  notification.className = `notification-toast ${type === 'error' ? 'is-error' : 'is-success'}`;
+  notification.setAttribute('role', type === 'error' ? 'alert' : 'status');
+
+  const messageText = document.createElement('span');
+  messageText.textContent = message;
+  const dismissButton = document.createElement('button');
+  dismissButton.type = 'button';
+  dismissButton.className = 'notification-dismiss';
+  dismissButton.setAttribute('aria-label', 'Dismiss notification');
+  dismissButton.textContent = '×';
+  notification.append(messageText, dismissButton);
+  region.append(notification);
+
+  const dismiss = () => notification.remove();
+  const timeoutId = window.setTimeout(dismiss, 4500);
+  dismissButton.addEventListener('click', () => {
+    window.clearTimeout(timeoutId);
+    dismiss();
+  });
+}
+
 function formatCurrency(value) {
   return new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 0 }).format(Number(value || 0));
+}
+
+function formatTrainingDate(value) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(value))
+    ? new Date(`${value}T00:00:00.000Z`)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '');
+  return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(date);
+}
+
+function toDateInputValue(value) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return String(value);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
 }
 
 function escapeHtml(value) {
@@ -117,6 +167,7 @@ async function loadStorefront() {
   state.categories = siteData.categories || [];
   state.products = (siteData.products || defaultProducts).map((product) => ({ ...product, price: Number(product.price) || 0 }));
   state.trainings = siteData.trainings || defaultTrainings;
+  state.trainingPortalOpen = siteData.trainingPortalOpen !== false;
   state.paymentDetails = { ...state.paymentDetails, ...(paymentData.paymentDetails || {}) };
   state.reviews = reviewsData.reviews || [];
 
@@ -180,12 +231,13 @@ async function submitProductReview(event) {
   });
   const data = await response.json();
   if (!response.ok) {
-    alert(data.message || 'Unable to save your review.');
+    showNotification(data.message || 'Unable to save your review.', 'error');
     return;
   }
   state.reviews = state.reviews.filter((review) => review.id !== data.review.id);
   state.reviews.unshift(data.review);
   renderApp();
+  showNotification('Your review has been saved.');
 }
 
 function getCartItems() {
@@ -206,6 +258,25 @@ function saveCart() {
   writeStorage('ashmie_cart', state.cart);
 }
 
+async function readSelectedImage(file) {
+  if (!file || !file.type.startsWith('image/')) return '';
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Unable to read the selected image.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function readSelectedFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Unable to read the selected file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function addToCart(productId) {
   const product = state.products.find((item) => item.id === productId);
   if (!product) return;
@@ -220,6 +291,7 @@ function addToCart(productId) {
   saveCart();
   state.page = 'cart';
   renderApp();
+  showNotification(`${product.name} added to your cart.`);
 }
 
 function updateCartQuantity(productId, delta) {
@@ -227,17 +299,19 @@ function updateCartQuantity(productId, delta) {
   if (!entry) return;
 
   entry.quantity += delta;
+  const removed = entry.quantity <= 0;
   if (entry.quantity <= 0) {
     state.cart = state.cart.filter((item) => item.id !== productId);
   }
 
   saveCart();
   renderApp();
+  showNotification(removed ? 'Product removed from your cart.' : 'Cart quantity updated.');
 }
 
 function checkoutCart() {
   if (!state.cart.length) {
-    alert('Your cart is empty. Add products before checking out.');
+    showNotification('Your cart is empty. Add products before checking out.', 'error');
     return;
   }
 
@@ -256,13 +330,13 @@ async function placeOrder(event) {
   const deliveryAddress = state.fulfillmentMethod === 'delivery' ? String(formData.get('deliveryAddress') || '').trim() : '';
 
   if (!customerName || !customerEmail || !customerPhone || (state.fulfillmentMethod === 'delivery' && !deliveryAddress)) {
-    alert('Enter your contact details and delivery address to place the order.');
+    showNotification('Enter your contact details and delivery address to place the order.', 'error');
     return;
   }
 
   const submitButton = event.currentTarget.querySelector('[type="submit"]');
   submitButton.disabled = true;
-  submitButton.textContent = 'Connecting to Paystack...';
+  submitButton.textContent = 'Preparing payment...';
   try {
     const response = await fetch('/api/payments/initialize', {
       method: 'POST',
@@ -276,11 +350,20 @@ async function placeOrder(event) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || 'Unable to start payment.');
+    if (data.paymentMethod === 'bank-transfer') {
+      state.pendingManualOrder = data;
+      writeStorage('ashmie_pending_manual_order', data);
+      state.cart = [];
+      saveCart();
+      state.page = 'manual-payment';
+      renderApp();
+      return;
+    }
     window.location.assign(data.authorizationUrl);
   } catch (error) {
-    alert(error.message || 'Unable to start payment. Please try again.');
+    showNotification(error.message || 'Unable to start payment. Please try again.', 'error');
     submitButton.disabled = false;
-    submitButton.textContent = 'Continue to secure Paystack checkout';
+    submitButton.textContent = 'Continue to payment';
   }
 }
 
@@ -309,6 +392,14 @@ async function verifyPaystackCallback() {
   state.page = 'payment-result';
 }
 
+function getPostAuthenticationPage() {
+  const returnPage = state.authReturnPage;
+  state.authReturnPage = null;
+  if (state.user.role === 'admin') return returnPage === 'admin-chat' ? 'admin-chat' : 'admin';
+  if (returnPage === 'chat' || returnPage === 'manual-payment') return returnPage;
+  return state.user.role === 'student' ? 'student' : 'home';
+}
+
 async function loginWithCredentials(email, password) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const normalizedPassword = String(password || '').trim();
@@ -324,9 +415,11 @@ async function loginWithCredentials(email, password) {
     if (!response.ok) throw new Error(data.message || 'Unable to sign in.');
     state.user = data.user;
     writeStorage('ashmie_auth_token', data.token);
-    state.page = state.user.role === 'admin' ? 'admin' : state.user.role === 'student' ? 'student' : 'home';
+    state.page = getPostAuthenticationPage();
     state.authMessage = '';
     if (state.user.role === 'admin') await loadAdminOverview();
+    else await loadTrainingEnrollments();
+    if (['chat', 'admin-chat'].includes(state.page)) await refreshChatData();
     renderApp();
     return state.user;
   } catch (error) {
@@ -340,7 +433,35 @@ async function loadAdminOverview() {
   const response = await fetch('/api/admin/overview', {
     headers: { Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}` },
   });
-  if (response.ok) state.adminOverview = await response.json();
+  if (response.ok) {
+    state.adminOverview = await response.json();
+    state.products = (state.adminOverview.products || state.products).map((product) => ({ ...product, price: Number(product.price) || 0 }));
+    state.trainings = state.adminOverview.trainings || state.trainings;
+    state.trainingPortalOpen = state.adminOverview.trainingPortalOpen !== false;
+  }
+}
+
+async function loadTrainingEnrollments() {
+  if (!state.user || state.user.role === 'admin') return;
+  const response = await fetch('/api/training/enrollments', {
+    headers: { Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}` },
+  });
+  if (response.ok) {
+    const data = await response.json();
+    state.trainingEnrollments = data.enrollments || [];
+  }
+}
+
+function handleExpiredChatSession() {
+  state.authReturnPage = state.page;
+  state.user = null;
+  state.chatMessages = [];
+  state.chatConversations = [];
+  state.chatError = '';
+  state.authMessage = 'Your session expired. Sign in again to continue to your inbox.';
+  state.accountMode = 'login';
+  state.page = 'account';
+  localStorage.removeItem('ashmie_auth_token');
 }
 
 async function refreshChatData({ render = false } = {}) {
@@ -354,7 +475,11 @@ async function refreshChatData({ render = false } = {}) {
         headers: { Authorization: `Bearer ${token}` },
       });
       const inboxData = await inboxResponse.json();
-      if (!inboxResponse.ok) throw new Error(inboxData.message || 'Unable to load the customer inbox.');
+      if (!inboxResponse.ok) {
+        const error = new Error(inboxData.message || 'Unable to load the customer inbox.');
+        error.status = inboxResponse.status;
+        throw error;
+      }
       state.chatConversations = inboxData.conversations || [];
       if (!state.chatConversations.some((item) => item.conversationId === state.selectedChatId)) {
         state.selectedChatId = state.chatConversations[0]?.conversationId || null;
@@ -365,7 +490,11 @@ async function refreshChatData({ render = false } = {}) {
           headers: { Authorization: `Bearer ${token}` },
         });
         const messagesData = await messagesResponse.json();
-        if (!messagesResponse.ok) throw new Error(messagesData.message || 'Unable to load this conversation.');
+        if (!messagesResponse.ok) {
+          const error = new Error(messagesData.message || 'Unable to load this conversation.');
+          error.status = messagesResponse.status;
+          throw error;
+        }
         state.chatMessages = messagesData.messages || [];
         const selectedConversation = state.chatConversations.find((item) => item.conversationId === state.selectedChatId);
         if (selectedConversation) selectedConversation.unreadCount = 0;
@@ -375,17 +504,22 @@ async function refreshChatData({ render = false } = {}) {
     } else {
       const response = await fetch('/api/chat/messages', { headers: { Authorization: `Bearer ${token}` } });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Unable to load your support chat.');
+      if (!response.ok) {
+        const error = new Error(data.message || 'Unable to load your support chat.');
+        error.status = response.status;
+        throw error;
+      }
       state.chatMessages = data.messages || [];
     }
     state.chatError = '';
   } catch (error) {
-    state.chatError = error.message;
+    if (error.status === 401) handleExpiredChatSession();
+    else state.chatError = error.message;
   } finally {
     state.chatRefreshing = false;
   }
 
-  if (render) renderApp();
+  if (render || state.page === 'account') renderApp();
   else updateChatDom();
 }
 
@@ -394,7 +528,8 @@ function renderChatMessages(messages, emptyMessage) {
   return messages.map((message) => `
     <article class="chat-message ${message.senderId === state.user?.id ? 'own' : ''}">
       <div class="chat-message-meta"><strong>${escapeHtml(message.senderName)}</strong><time datetime="${escapeHtml(message.createdAt)}">${new Date(message.createdAt).toLocaleString('en-NG', { dateStyle: 'medium', timeStyle: 'short' })}</time></div>
-      <p>${escapeHtml(message.body)}</p>
+      ${message.body ? `<p>${escapeHtml(message.body)}</p>` : ''}
+      ${message.attachment ? `<a class="chat-attachment" href="${escapeHtml(message.attachment.dataUrl)}" download="${escapeHtml(message.attachment.name)}" target="_blank" rel="noopener noreferrer">${message.attachment.mimeType.startsWith('image/') ? `<img src="${escapeHtml(message.attachment.dataUrl)}" alt="${escapeHtml(message.attachment.name)}" />` : '<span class="chat-attachment-icon" aria-hidden="true">PDF</span>'}<span>${escapeHtml(message.attachment.name)}</span></a>` : ''}
     </article>
   `).join('');
 }
@@ -404,7 +539,7 @@ function renderChatConversations() {
   return state.chatConversations.map((conversation) => `
     <button type="button" class="chat-conversation ${conversation.conversationId === state.selectedChatId ? 'active' : ''}" data-conversation-id="${escapeHtml(conversation.conversationId)}">
       <span class="chat-conversation-heading"><strong>${escapeHtml(conversation.customerName)}</strong>${conversation.unreadCount ? `<span class="chat-unread-count">${conversation.unreadCount}</span>` : ''}</span>
-      <span class="chat-conversation-preview">${escapeHtml(conversation.latestMessage)}</span>
+      <span class="chat-conversation-preview">${escapeHtml(conversation.latestMessage || 'Receipt attachment')}</span>
       <span class="chat-conversation-email">${escapeHtml(conversation.customerEmail)}</span>
     </button>
   `).join('');
@@ -432,13 +567,29 @@ async function sendChatMessage(event) {
   const form = event.currentTarget;
   const textarea = form.querySelector('textarea[name="body"]');
   const body = textarea.value.trim();
-  if (!body) return;
+  const file = form.querySelector('input[name="attachment"]').files[0];
+  if (!body && !file) {
+    state.chatError = 'Write a message or attach a receipt.';
+    updateChatDom();
+    return;
+  }
+  if (file && !['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(file.type)) {
+    state.chatError = 'Attach a PNG, JPEG, WebP, or PDF receipt.';
+    updateChatDom();
+    return;
+  }
+  if (file && file.size > 5 * 1024 * 1024) {
+    state.chatError = 'Receipt files must be 5 MB or smaller.';
+    updateChatDom();
+    return;
+  }
 
   const payload = { body };
   if (state.page === 'admin-chat') payload.conversationId = state.selectedChatId;
   const submitButton = form.querySelector('button[type="submit"]');
   submitButton.disabled = true;
   try {
+    if (file) payload.attachment = { name: file.name, mimeType: file.type, dataUrl: await readSelectedFile(file) };
     const response = await fetch('/api/chat/messages', {
       method: 'POST',
       headers: {
@@ -448,14 +599,25 @@ async function sendChatMessage(event) {
       body: JSON.stringify(payload),
     });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.message || 'Unable to send message.');
+    if (!response.ok) {
+      const error = new Error(data.message || 'Unable to send message.');
+      error.status = response.status;
+      throw error;
+    }
     state.chatMessages.push(data.message);
     state.chatError = '';
     form.reset();
+    form.querySelector('.chat-file-name').textContent = 'Receipt file optional · 5 MB max';
     await refreshChatData();
+    showNotification(file ? 'Receipt shared in the inbox.' : 'Message sent.');
   } catch (error) {
-    state.chatError = error.message;
-    updateChatDom();
+    if (error.status === 401) {
+      handleExpiredChatSession();
+      renderApp();
+    } else {
+      state.chatError = error.message;
+      updateChatDom();
+    }
   } finally {
     submitButton.disabled = false;
   }
@@ -484,6 +646,7 @@ async function logout() {
     await fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
   }
   state.user = null;
+  state.authReturnPage = null;
   localStorage.removeItem('ashmie_auth_token');
   state.page = 'home';
   renderApp();
@@ -506,8 +669,10 @@ async function registerAccount(name, email, password, accountType, adminCode) {
     state.user = data.user;
     writeStorage('ashmie_auth_token', data.token);
     state.authMessage = '';
-    state.page = state.user.role === 'admin' ? 'admin' : 'home';
+    state.page = getPostAuthenticationPage();
     if (state.user.role === 'admin') await loadAdminOverview();
+    else await loadTrainingEnrollments();
+    if (['chat', 'admin-chat'].includes(state.page)) await refreshChatData();
     renderApp();
   } catch (error) {
     state.authMessage = error.message;
@@ -529,12 +694,12 @@ async function savePaymentDetails(event) {
   });
   const data = await response.json();
   if (!response.ok) {
-    alert(data.message || 'Unable to save payment details.');
+    showNotification(data.message || 'Unable to save payment details.', 'error');
     return;
   }
   state.paymentDetails = data.paymentDetails;
-  alert('Payment details updated.');
   renderApp();
+  showNotification('Payment details updated.');
 }
 
 async function createAdminAccount(event) {
@@ -550,11 +715,11 @@ async function createAdminAccount(event) {
   });
   const data = await response.json();
   if (!response.ok) {
-    alert(data.message || 'Unable to create administrator account.');
+    showNotification(data.message || 'Unable to create administrator account.', 'error');
     return;
   }
-  alert(`Administrator account created for ${data.user.email}.`);
   event.currentTarget.reset();
+  showNotification(`Administrator account created for ${data.user.email}.`);
 }
 
 async function updateAdminSignupCode(event) {
@@ -564,7 +729,7 @@ async function updateAdminSignupCode(event) {
   const code = String(formData.get('code') || '').trim();
   const confirmation = String(formData.get('confirmation') || '').trim();
   if (code !== confirmation) {
-    alert('The code and confirmation do not match.');
+    showNotification('The code and confirmation do not match.', 'error');
     return;
   }
 
@@ -578,11 +743,11 @@ async function updateAdminSignupCode(event) {
   });
   const data = await response.json();
   if (!response.ok) {
-    alert(data.message || 'Unable to update admin signup code.');
+    showNotification(data.message || 'Unable to update admin signup code.', 'error');
     return;
   }
-  alert('Admin signup code updated.');
   form.reset();
+  showNotification('Admin signup code updated.');
 }
 
 async function updateOrderStatus(event) {
@@ -599,69 +764,159 @@ async function updateOrderStatus(event) {
   });
   const data = await response.json();
   if (!response.ok) {
-    alert(data.message || 'Unable to update order status.');
+    showNotification(data.message || 'Unable to update order status.', 'error');
     return;
   }
   await loadAdminOverview();
   renderApp();
+  showNotification('Order status updated.');
 }
 
-function enrollTraining(courseId) {
+async function enrollTraining(courseId) {
   if (!state.user) {
     state.page = 'student';
     renderApp();
     return;
   }
-
-  const training = state.trainings.find((course) => course.id === courseId);
-  if (!training) return;
-
-  const saved = readStorage('ashmie_student_enrollments', []);
-  const existing = saved.find((item) => item.courseId === courseId && item.email === state.user.email);
-
-  if (existing) {
-    alert('You are already enrolled in this training.');
+  const response = await fetch('/api/training/enroll', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+    },
+    body: JSON.stringify({ trainingId: courseId }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showNotification(data.message || 'Unable to register for training.', 'error');
     return;
   }
-
-  saved.push({
-    courseId,
-    title: training.title,
-    email: state.user.email,
-    student: state.user.name,
-    date: training.date,
-    status: 'Booked',
-  });
-
-  writeStorage('ashmie_student_enrollments', saved);
-  alert(`Successfully enrolled for ${training.title}.`);
+  await loadTrainingEnrollments();
   renderApp();
+  showNotification(`Successfully registered for ${data.enrollment.title}.`);
 }
 
-function addProductFromForm(event) {
+async function addProductFromForm(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const name = String(form.get('name') || '').trim();
-  const category = String(form.get('category') || '').trim();
-  const price = Number(form.get('price') || 0);
-  const image = String(form.get('image') || 'https://images.unsplash.com/photo-1558301211-0d8c8ddee6ec?auto=format&fit=crop&w=900&q=80').trim();
+  const form = event.currentTarget;
+  const formData = new FormData(form);
+  const imageFile = formData.get('imageFile');
+  const values = Object.fromEntries(formData.entries());
 
-  if (!name || !category || !price) {
-    alert('Enter a product name, category, and price.');
-    return;
+  if (imageFile && imageFile instanceof File && imageFile.size > 0) {
+    try {
+      values.image = await readSelectedImage(imageFile);
+    } catch (error) {
+      showNotification(error.message || 'Unable to read the selected image.', 'error');
+      return;
+    }
   }
 
-  const product = {
-    id: `custom-${Date.now()}`,
-    name,
-    category,
-    price,
-    image,
-    description: `${name} is now available for placement orders.`,
-  };
-
-  state.products = [product, ...state.products];
+  delete values.imageFile;
+  const response = await fetch('/api/admin/products', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+    },
+    body: JSON.stringify(values),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showNotification(data.message || 'Unable to add product.', 'error');
+    return;
+  }
+  form.reset();
+  await loadAdminOverview();
   renderApp();
+  showNotification(`${values.name} added to the shop.`);
+}
+
+async function updateProduct(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const formData = new FormData(form);
+  const imageFile = formData.get('imageFile');
+  const values = Object.fromEntries(formData.entries());
+
+  if (imageFile && imageFile instanceof File && imageFile.size > 0) {
+    try {
+      values.image = await readSelectedImage(imageFile);
+    } catch (error) {
+      showNotification(error.message || 'Unable to read the selected image.', 'error');
+      return;
+    }
+  }
+
+  delete values.imageFile;
+  const response = await fetch(`/api/admin/products/${encodeURIComponent(form.dataset.productId)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+    },
+    body: JSON.stringify(values),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showNotification(data.message || 'Unable to update product.', 'error');
+    return;
+  }
+  await loadAdminOverview();
+  renderApp();
+  showNotification(`${values.name} updated.`);
+}
+
+async function deleteProduct(button) {
+  const productName = button.dataset.productName;
+  if (!window.confirm(`Remove ${productName} from the shop?`)) return;
+  const response = await fetch(`/api/admin/products/${encodeURIComponent(button.dataset.productId)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}` },
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showNotification(data.message || 'Unable to remove product.', 'error');
+    return;
+  }
+  state.reviews = state.reviews.filter((review) => review.productId !== data.productId);
+  await loadAdminOverview();
+  renderApp();
+  showNotification(`${productName} removed from the shop.`);
+}
+
+async function saveTrainingSettings(event) {
+  event.preventDefault();
+  await persistTrainingSettings(event.currentTarget);
+}
+
+async function persistTrainingSettings(form) {
+  const formData = new FormData(form);
+  const fees = Object.fromEntries(state.trainings.map((training) => [training.id, formData.get(`fee-${training.id}`)]));
+  const courseDetails = Object.fromEntries(state.trainings.map((training) => [training.id, {
+    location: formData.get(`location-${training.id}`),
+    date: formData.get(`date-${training.id}`),
+    duration: formData.get(`duration-${training.id}`),
+  }]));
+  const response = await fetch('/api/admin/training-settings', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+    },
+    body: JSON.stringify({ isOpen: formData.get('isOpen') === 'true', fees, courseDetails }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    showNotification(data.message || 'Unable to save training settings.', 'error');
+    return;
+  }
+  state.trainings = data.trainings;
+  state.trainingPortalOpen = data.trainingPortalOpen;
+  state.adminOverview.trainings = data.trainings;
+  state.adminOverview.trainingPortalOpen = data.trainingPortalOpen;
+  renderApp();
+  showNotification('Training settings updated.');
 }
 
 function renderHomeSection() {
@@ -688,14 +943,14 @@ function renderHomeSection() {
     </article>
   `).join('');
 
-  const trainingCards = state.trainings.slice(0, 3).map((course) => `
+  const trainingCards = state.trainingPortalOpen ? state.trainings.slice(0, 3).map((course) => `
     <article class="training-card">
       <h3>${course.title}</h3>
-      <div class="training-meta"><span>${course.duration}</span><span class="training-fee">${formatCurrency(course.fee)}</span></div>
+      <div class="training-meta"><span>${escapeHtml(course.duration)}</span><span class="training-fee">${formatCurrency(course.fee)}</span></div>
       <p>${course.topics.join(' • ')}</p>
-      <button type="button" class="secondary" data-page="student">View student portal</button>
+      <button type="button" class="secondary" data-page="student">View Training</button>
     </article>
-  `).join('');
+  `).join('') : '<p class="empty-state">Training registration is currently closed.</p>';
 
   const customerReviews = state.reviews.slice(0, 3).map((review) => {
     const product = state.products.find((item) => item.id === review.productId);
@@ -716,9 +971,9 @@ function renderHomeSection() {
         <p>${state.site.description}</p>
         <div class="actions">
           <button type="button" class="primary" data-page="shop">Shop now</button>
-          <button type="button" class="secondary" data-page="student">Student portal</button>
+          <button type="button" class="secondary" data-page="student">Training</button>
         </div>
-        <div class="mini-proof">Premium cakes, pastries, snacks and practical baking skills from Lagos, Nigeria.</div>
+        <div class="mini-proof">Premium cakes, pastries, snacks and practical baking skills from Hotoro Behind Chula Fueling Station.</div>
       </div>
 
       <div class="hero-panel">
@@ -814,33 +1069,44 @@ function renderShopSection() {
 }
 
 function renderStudentPortal() {
-  const enrollments = readStorage('ashmie_student_enrollments', []);
+  const enrollments = state.trainingEnrollments;
   const studentEnrollments = state.user ? enrollments.filter((item) => item.email === state.user.email) : [];
   const studentCourses = state.trainings.map((course) => {
     const isBooked = enrollments.some((item) => item.courseId === course.id && item.email === state.user?.email);
     return `
       <article class="training-card">
         <h3>${course.title}</h3>
-        <div class="training-meta"><span>${course.duration}</span><span class="training-fee">${formatCurrency(course.fee)}</span></div>
+        <div class="training-meta"><span>${escapeHtml(course.duration)}</span><span class="training-fee">${formatCurrency(course.fee)}</span></div>
         <p>${course.topics.join(' • ')}</p>
         <ul class="training-list">
-          <li>Start: ${course.date}</li>
-          <li>Location: ${course.location}</li>
+          <li>Start: ${escapeHtml(formatTrainingDate(course.date))}</li>
+          <li>Location: ${escapeHtml(course.location)}</li>
           <li>Seats left: ${course.seats}</li>
         </ul>
-        <button type="button" class="${isBooked ? 'secondary' : 'primary'} enroll-course" data-course-id="${course.id}">${isBooked ? 'Booked' : 'Enroll now'}</button>
+        ${state.trainingPortalOpen ? `<button type="button" class="${isBooked ? 'secondary' : 'primary'} enroll-course" data-course-id="${course.id}" ${isBooked ? 'disabled' : ''}>${isBooked ? 'Booked' : 'Register'}</button>` : '<p class="muted">Registration is closed.</p>'}
       </article>
     `;
   }).join('');
 
   if (!state.user) {
-    return `<section class="feature-section"><div class="portal-shell"><div class="portal-card"><span class="eyebrow">Student access</span><h2>Sign in to view your learning portal</h2><button type="button" class="primary" data-page="account">Go to account portal</button></div></div></section>`;
+    return `
+      <section class="feature-section">
+        <div class="portal-shell">
+          <div class="portal-card">
+            <span class="eyebrow">Training access</span>
+            <h2>Sign in to view your learning portal</h2>
+            ${state.trainingPortalOpen ? '<p class="muted">Registration is open. Sign in to browse courses and register.</p>' : '<p class="muted">Registration is closed. New class enrollments are not being accepted right now.</p>'}
+            <button type="button" class="primary" data-page="account">Go to account portal</button>
+          </div>
+        </div>
+      </section>
+    `;
   }
 
   return `
     <section class="feature-section">
       <div class="section-heading">
-        <span class="eyebrow">Student portal</span>
+        <span class="eyebrow">Training</span>
         <h2>Welcome back, ${state.user.name}</h2>
       </div>
 
@@ -848,7 +1114,7 @@ function renderStudentPortal() {
         <div class="portal-card">
           <h3>Your training bookings</h3>
           <div class="metric-row"><strong>${studentEnrollments.length}</strong><span>${studentEnrollments.length === 1 ? 'course booked' : 'courses booked'}</span></div>
-          ${studentEnrollments.length ? `<ul class="training-list">${studentEnrollments.map((item) => `<li>${escapeHtml(item.title)} · ${escapeHtml(item.date)}</li>`).join('')}</ul>` : '<p class="muted">You have no class bookings yet.</p>'}
+          ${studentEnrollments.length ? `<ul class="training-list">${studentEnrollments.map((item) => `<li>${escapeHtml(item.title)} · ${escapeHtml(formatTrainingDate(item.date))}</li>`).join('')}</ul>` : '<p class="muted">You have no class bookings yet.</p>'}
         </div>
         <div class="portal-card">
           <h3>Browse training</h3>
@@ -857,7 +1123,7 @@ function renderStudentPortal() {
         </div>
       </div>
 
-      <div class="training-grid" style="margin-top: 24px;">${studentCourses}</div>
+      ${state.trainingPortalOpen ? `<div class="training-grid" style="margin-top: 24px;">${studentCourses}</div>` : '<div class="portal-card training-closed"><h3>Registration is closed</h3><p class="muted">New class enrollments are not being accepted right now. Please check back later.</p></div>'}
     </section>
   `;
 }
@@ -879,8 +1145,12 @@ function renderCustomerChatSection() {
         <p id="chat-error" class="form-message" role="alert">${escapeHtml(state.chatError)}</p>
         <form class="chat-compose">
           <label class="visually-hidden" for="customer-chat-message">Your message</label>
-          <textarea id="customer-chat-message" name="body" rows="2" maxlength="2000" placeholder="Write your message..." required></textarea>
-          <button type="submit" class="primary">Send message</button>
+          <textarea id="customer-chat-message" name="body" rows="2" maxlength="2000" placeholder="Write your message..."></textarea>
+          <div class="chat-compose-actions">
+            <label class="chat-file-picker">Attach receipt<input class="visually-hidden chat-attachment-input" id="customer-chat-attachment" name="attachment" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" /></label>
+            <span class="chat-file-name" aria-live="polite">Receipt file optional · 5 MB max</span>
+            <button type="submit" class="primary">Send message</button>
+          </div>
         </form>
       </div>
     </section>
@@ -905,7 +1175,7 @@ function renderAdminChatSection() {
           ${activeConversation ? `<div class="chat-panel-heading"><div><strong>${escapeHtml(activeConversation.customerName)}</strong><span>${escapeHtml(activeConversation.customerEmail)}</span></div><span class="chat-online-indicator">Customer</span></div>` : '<div class="chat-panel-heading"><div><strong>Inbox</strong><span>Select a customer conversation to reply.</span></div></div>'}
           <div id="chat-message-list" class="chat-message-list" aria-live="polite">${renderChatMessages(state.chatMessages, activeConversation ? 'No messages in this conversation yet.' : 'Your customer inbox is empty.')}</div>
           <p id="chat-error" class="form-message" role="alert">${escapeHtml(state.chatError)}</p>
-          ${activeConversation ? `<form class="chat-compose"><label class="visually-hidden" for="admin-chat-message">Reply to ${escapeHtml(activeConversation.customerName)}</label><textarea id="admin-chat-message" name="body" rows="2" maxlength="2000" placeholder="Reply to ${escapeHtml(activeConversation.customerName)}..." required></textarea><button type="submit" class="primary">Send reply</button></form>` : ''}
+          ${activeConversation ? `<form class="chat-compose"><label class="visually-hidden" for="admin-chat-message">Reply to ${escapeHtml(activeConversation.customerName)}</label><textarea id="admin-chat-message" name="body" rows="2" maxlength="2000" placeholder="Reply to ${escapeHtml(activeConversation.customerName)}..."></textarea><div class="chat-compose-actions"><label class="chat-file-picker">Attach file<input class="visually-hidden chat-attachment-input" id="admin-chat-attachment" name="attachment" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" /></label><span class="chat-file-name" aria-live="polite">Receipt file optional · 5 MB max</span><button type="submit" class="primary">Send reply</button></div></form>` : ''}
         </section>
       </div>
     </section>
@@ -946,12 +1216,43 @@ function renderAdminPortal() {
       <p>${escapeHtml(review.comment)}</p>
     </li>
   `).join('') : '<li>No customer reviews yet.</li>';
+  const productManagementMarkup = state.products.length ? state.products.map((product) => `
+    <article class="admin-product-row">
+      <div class="admin-product-header">
+        <img src="${product.image || 'https://images.unsplash.com/photo-1517433670267-08bbd4be890f?auto=format&fit=crop&w=900&q=80'}" alt="${escapeHtml(product.name)}" />
+        <strong>${escapeHtml(product.name)}</strong>
+      </div>
+      <form class="admin-product-edit-form" data-product-id="${escapeHtml(product.id)}">
+        <input name="name" aria-label="Product name" value="${escapeHtml(product.name)}" required />
+        <input name="category" aria-label="Product category" value="${escapeHtml(product.category)}" required />
+        <input name="price" aria-label="Price in naira" type="number" min="1" step="1" value="${Number(product.price)}" required />
+        <input name="imageFile" aria-label="Upload product image" type="file" accept="image/*" />
+        <input name="image" aria-label="Product image URL" type="url" value="${escapeHtml(product.image || '')}" placeholder="Image URL fallback" />
+        <textarea name="description" aria-label="Product description" rows="2" required>${escapeHtml(product.description)}</textarea>
+        <button type="submit" class="secondary">Save changes</button>
+      </form>
+      <button type="button" class="danger-button delete-product-button" data-product-id="${escapeHtml(product.id)}" data-product-name="${escapeHtml(product.name)}">Remove product</button>
+    </article>
+  `).join('') : '<p class="empty-state">No products in the shop.</p>';
+  const trainingSettingsMarkup = state.trainings.map((training) => `
+    <fieldset class="training-course-settings">
+      <legend>${escapeHtml(training.title)}</legend>
+      <div class="training-course-fields">
+        <label>Fee (₦)<input name="fee-${escapeHtml(training.id)}" type="number" min="1" step="1" value="${Number(training.fee)}" required /></label>
+        <label>Training center location<input name="location-${escapeHtml(training.id)}" value="${escapeHtml(training.location)}" maxlength="200" required /></label>
+        <label>Starting date<input name="date-${escapeHtml(training.id)}" type="date" value="${escapeHtml(toDateInputValue(training.date))}" required /></label>
+        <label>Duration<input name="duration-${escapeHtml(training.id)}" value="${escapeHtml(training.duration)}" maxlength="80" placeholder="e.g. 2 Weeks" required /></label>
+      </div>
+    </fieldset>
+  `).join('');
 
   return `
-    <section class="feature-section">
-      <div class="section-heading">
-        <span class="eyebrow">Admin portal</span>
-        <h2>Business operations dashboard</h2>
+    <section class="admin-shell feature-section">
+      <div class="admin-header-panel">
+        <div>
+          <span class="eyebrow">Admin portal</span>
+          <h2>Business operations dashboard</h2>
+        </div>
       </div>
 
       <div class="summary-grid">
@@ -964,57 +1265,113 @@ function renderAdminPortal() {
         `).join('')}
       </div>
 
-      <div class="admin-grid" style="margin-top: 24px;">
-        <div class="portal-card">
-          <h3>Add product</h3>
+      <div class="admin-content-grid">
+        <div class="portal-card admin-primary-card">
+          <div class="admin-card-header">
+            <h3>Add product</h3>
+            <span>Product catalog</span>
+          </div>
           <form id="product-form" class="portal-form form-grid">
             <input name="name" type="text" placeholder="Product name" required />
             <input name="category" type="text" placeholder="Category" required />
             <input name="price" type="number" placeholder="Price" min="0" required />
-            <input name="image" type="url" placeholder="Image URL" />
+            <label class="file-upload-field">
+              <span>Upload product image</span>
+              <input name="imageFile" type="file" accept="image/*" />
+            </label>
+            <input name="image" type="url" placeholder="Image URL fallback (optional)" />
+            <textarea name="description" rows="2" placeholder="Product description" required></textarea>
             <button type="submit" class="primary">Save product</button>
           </form>
         </div>
 
-        <div class="portal-card">
-          <h3>Latest orders</h3>
+        <div class="portal-card admin-secondary-card">
+          <div class="admin-card-header">
+            <h3>Latest orders</h3>
+            <span>Fulfillment</span>
+          </div>
           <ul class="admin-list">${orderMarkup}</ul>
         </div>
       </div>
 
-      <div class="portal-card payment-settings-card">
-        <h3>Recent customer reviews</h3>
-        <ul class="admin-list">${reviewMarkup}</ul>
+      <div class="portal-card payment-settings-card admin-catalog-card">
+        <div class="admin-card-header">
+          <span class="eyebrow">Shop catalog</span>
+          <h3>Manage products and prices</h3>
+        </div>
+        <div class="admin-product-list">${productManagementMarkup}</div>
       </div>
 
-      <div class="portal-card payment-settings-card">
-        <span class="eyebrow">Checkout settings</span>
-        <h3>Payment details</h3>
-        <form id="payment-settings-form" class="portal-form form-grid">
-          <label>Bank name<input name="bankName" value="${escapeHtml(state.paymentDetails.bankName)}" required /></label>
-          <label>Account name<input name="accountName" value="${escapeHtml(state.paymentDetails.accountName)}" required /></label>
-          <label>Account number<input name="accountNumber" inputmode="numeric" value="${escapeHtml(state.paymentDetails.accountNumber)}" required /></label>
-          <label>Delivery fee (₦)<input name="deliveryFee" type="number" min="0" step="1" value="${Number(state.paymentDetails.deliveryFee) || 0}" required /></label>
-          <label>Payment instructions<textarea name="instructions" rows="3" required>${escapeHtml(state.paymentDetails.instructions)}</textarea></label>
-          <button type="submit" class="primary">Save payment details</button>
-        </form>
+      <div class="admin-lower-grid">
+        <div class="portal-card payment-settings-card">
+          <div class="admin-card-header">
+            <span class="eyebrow">Training registration</span>
+            <h3>Training portal</h3>
+          </div>
+          <form id="training-settings-form" class="portal-form form-grid">
+            <fieldset class="registration-status-control">
+              <legend>Registration status</legend>
+              <div class="registration-status-options" role="radiogroup" aria-label="Training registration status">
+                <label class="registration-status-option ${state.adminOverview.trainingPortalOpen ? 'selected open' : ''}">
+                  <input name="isOpen" type="radio" value="true" ${state.adminOverview.trainingPortalOpen ? 'checked' : ''} />
+                  <span>OPEN</span>
+                </label>
+                <label class="registration-status-option ${!state.adminOverview.trainingPortalOpen ? 'selected closed' : ''}">
+                  <input name="isOpen" type="radio" value="false" ${!state.adminOverview.trainingPortalOpen ? 'checked' : ''} />
+                  <span>CLOSE</span>
+                </label>
+              </div>
+            </fieldset>
+            ${trainingSettingsMarkup}
+            <button type="submit" class="primary">Save Training settings</button>
+          </form>
+        </div>
+
+        <div class="portal-card payment-settings-card">
+          <div class="admin-card-header">
+            <h3>Recent customer reviews</h3>
+            <span>Feedback</span>
+          </div>
+          <ul class="admin-list">${reviewMarkup}</ul>
+        </div>
       </div>
 
-      <div class="portal-card payment-settings-card">
-        <span class="eyebrow">Team access</span>
-        <h3>Create administrator account</h3>
-        <p class="muted">Only an administrator can add another administrator.</p>
-        <form id="admin-account-form" class="portal-form form-grid">
-          <label>Full name<input name="name" autocomplete="name" required /></label>
-          <label>Email address<input name="email" type="email" autocomplete="email" required /></label>
-          <label>Temporary password<input name="password" type="password" minlength="8" autocomplete="new-password" required /></label>
-          <button type="submit" class="primary">Create admin account</button>
-        </form>
+      <div class="admin-lower-grid">
+        <div class="portal-card payment-settings-card">
+          <div class="admin-card-header">
+            <span class="eyebrow">Checkout settings</span>
+            <h3>Payment details</h3>
+          </div>
+          <form id="payment-settings-form" class="portal-form form-grid">
+            <label>Bank name<input name="bankName" value="${escapeHtml(state.paymentDetails.bankName)}" required /></label>
+            <label>Account name<input name="accountName" value="${escapeHtml(state.paymentDetails.accountName)}" required /></label>
+            <label>Account number<input name="accountNumber" inputmode="numeric" value="${escapeHtml(state.paymentDetails.accountNumber)}" required /></label>
+            <label>Delivery fee (₦)<input name="deliveryFee" type="number" min="0" step="1" value="${Number(state.paymentDetails.deliveryFee) || 0}" required /></label>
+            <label>Payment instructions<textarea name="instructions" rows="3" required>${escapeHtml(state.paymentDetails.instructions)}</textarea></label>
+            <button type="submit" class="primary">Save payment details</button>
+          </form>
+        </div>
+
+        <div class="portal-card payment-settings-card">
+          <div class="admin-card-header">
+            <span class="eyebrow">Team access</span>
+            <h3>Create administrator account</h3>
+          </div>
+          <p class="muted">Only an administrator can add another administrator.</p>
+          <form id="admin-account-form" class="portal-form form-grid">
+            <label>Full name<input name="name" autocomplete="name" required /></label>
+            <label>Email address<input name="email" type="email" autocomplete="email" required /></label>
+            <label>Temporary password<input name="password" type="password" minlength="8" autocomplete="new-password" required /></label>
+            <button type="submit" class="primary">Create admin account</button>
+          </form>
+        </div>
       </div>
 
-      <div class="portal-card payment-settings-card">
-        <span class="eyebrow">Registration security</span>
-        <h3>Change admin signup code</h3>
+      <div class="portal-card payment-settings-card admin-security-card">
+        <div class="admin-card-header">
+          <span class="eyebrow">Registration security</span>
+          <h3>Change admin signup code</h3>
+        </div>
         <p class="muted">Share the new code only with people approved to create an administrator account.</p>
         <form id="admin-signup-code-form" class="portal-form form-grid">
           <label>New unique code<input name="code" type="password" minlength="4" maxlength="64" autocomplete="new-password" required /></label>
@@ -1145,7 +1502,7 @@ function renderCheckoutSection() {
             <label>Phone number<input name="customerPhone" type="tel" autocomplete="tel" required /></label>
             <div class="cart-row"><span>Delivery</span><span class="checkout-delivery-amount">${formatCurrency(delivery)}</span></div>
             <div class="cart-total"><span>Order total</span><span class="checkout-total-amount">${formatCurrency(total)}</span></div>
-            <button type="submit" class="primary" ${items.length ? '' : 'disabled'}>Continue to secure Paystack checkout</button>
+            <button type="submit" class="primary" ${items.length ? '' : 'disabled'}>Continue to payment</button>
             <button type="button" class="secondary" data-page="cart">Return to cart</button>
           </form>
         </div>
@@ -1176,17 +1533,60 @@ function renderPaymentResult() {
   `;
 }
 
+function renderManualPaymentSection() {
+  const transfer = state.pendingManualOrder;
+  if (!transfer?.order || !transfer.paymentDetails) {
+    return `<section class="feature-section"><div class="portal-shell"><div class="portal-card"><h2>No pending transfer order</h2><button type="button" class="primary" data-page="shop">Return to shop</button></div></div></section>`;
+  }
+
+  const { order, paymentDetails } = transfer;
+  const itemMarkup = order.items.map((item) => `
+    <li><span>${escapeHtml(item.name)} × ${Number(item.quantity)}</span><strong>${formatCurrency(item.total)}</strong></li>
+  `).join('');
+  const inboxButton = state.user && state.user.role !== 'admin'
+    ? '<button type="button" class="primary" data-page="chat">Share receipt in inbox</button>'
+    : '<button type="button" class="primary" data-page="account" data-auth-return-page="manual-payment">Sign in to share your receipt</button>';
+
+  return `
+    <section class="feature-section">
+      <div class="section-heading"><span class="eyebrow">Order ${escapeHtml(order.id)}</span><h2>Complete your bank transfer</h2></div>
+      <div class="manual-payment-layout">
+        <div class="portal-card manual-transfer-card">
+          <span class="payment-step">Bank transfer instructions</span>
+          <h3>Transfer ${formatCurrency(order.total)}</h3>
+          <dl class="payment-detail-list">
+            <div><dt>Bank</dt><dd>${escapeHtml(paymentDetails.bankName)}</dd></div>
+            <div><dt>Account name</dt><dd>${escapeHtml(paymentDetails.accountName)}</dd></div>
+            <div><dt>Account number</dt><dd><span id="manual-account-number">${escapeHtml(paymentDetails.accountNumber)}</span><button type="button" class="secondary copy-account-button">Copy account number</button></dd></div>
+            <div><dt>Payment reference</dt><dd>${escapeHtml(order.reference)}</dd></div>
+          </dl>
+          <p class="manual-transfer-instructions">${escapeHtml(paymentDetails.instructions)}</p>
+          <p class="payment-notice">Your order ${escapeHtml(order.id)} is pending until your transfer is confirmed. Send your receipt in the support inbox after payment.</p>
+          <div class="actions manual-payment-actions">${inboxButton}<button type="button" class="secondary" data-page="home">Continue shopping</button></div>
+        </div>
+        <div class="portal-card manual-order-card">
+          <h3>Order summary</h3>
+          <ul class="manual-order-items">${itemMarkup}</ul>
+          <div class="cart-row"><span>Subtotal</span><span>${formatCurrency(order.subtotal)}</span></div>
+          <div class="cart-row"><span>Delivery</span><span>${formatCurrency(order.deliveryFee)}</span></div>
+          <div class="cart-total"><span>Total due</span><span>${formatCurrency(order.total)}</span></div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderFooter() {
   return `
     <footer class="site-footer">
       <div class="footer-inner">
         <div class="footer-main">
-          <div class="footer-brand"><button type="button" class="brand-wrap" data-page="home"><img class="brand-logo" src="/ashmie-logo.jpeg" alt="" /><span>${state.site.name}</span></button><p>Thoughtful bakes, joyful celebrations and practical skills made fresh in Kano.</p></div>
+          <div class="footer-brand"><button type="button" class="brand-wrap" data-page="home"><img class="brand-logo" src="/ashmie-logo.jpeg" alt="" /><span>${state.site.name}</span></button><p>Thoughtful bakes, joyful celebrations and practical skills from ${escapeHtml(state.site.address)}.</p></div>
           <div class="footer-column"><h3>Explore</h3><button type="button" data-page="shop">Shop collection</button><button type="button" data-page="student">Baking classes</button><button type="button" data-page="account">My account</button></div>
           <div class="footer-column"><h3>Get in touch</h3><a href="tel:${state.site.phone}">${state.site.phone}</a><a href="mailto:${state.site.email}">${state.site.email}</a><span>${state.site.address}</span></div>
           <div class="footer-cta"><span class="eyebrow">Made to be shared</span><p>Planning a celebration or looking to learn?</p><button type="button" class="secondary" data-page="shop">Find your favourite</button></div>
         </div>
-        <div class="footer-bottom"><span>© ${new Date().getFullYear()} ${state.site.name}. All rights reserved.</span><span>Baked with care in Kano</span></div>
+        <div class="footer-bottom"><span>© ${new Date().getFullYear()} ${state.site.name}. All rights reserved.</span><span>Baked with care at ${escapeHtml(state.site.address)}</span></div>
       </div>
     </footer>
   `;
@@ -1203,26 +1603,35 @@ function renderApp() {
     cart: renderCartSection(),
     checkout: renderCheckoutSection(),
     'payment-result': renderPaymentResult(),
+    'manual-payment': renderManualPaymentSection(),
     admin: renderAdminPortal(),
   };
 
+  const isAdminUser = state.user?.role === 'admin';
   app.innerHTML = `
     <div class="page-shell">
-      <header class="topbar">
+      <header class="topbar ${isAdminUser ? 'admin-topbar' : ''}">
         <div class="brand-wrap">
           <img class="brand-logo" src="/ashmie-logo.jpeg" alt="" />
           <span>${state.site.name}</span>
         </div>
-        <nav class="main-nav" aria-label="Main navigation">
-          <button type="button" class="nav-link ${state.page === 'home' ? 'active' : ''}" data-page="home">Home</button>
-          <button type="button" class="nav-link ${state.page === 'shop' ? 'active' : ''}" data-page="shop">Shop</button>
-          <button type="button" class="nav-link ${state.page === 'student' ? 'active' : ''}" data-page="student">Student Portal</button>
-          <button type="button" class="nav-link ${state.page === (state.user?.role === 'admin' ? 'admin-chat' : 'chat') ? 'active' : ''}" data-page="${state.user?.role === 'admin' ? 'admin-chat' : 'chat'}">${state.user?.role === 'admin' ? 'Inbox' : 'Support chat'}</button>
-          <button type="button" class="nav-link ${state.page === 'cart' ? 'active' : ''}" data-page="cart">Cart (${getCartCount()})</button>
-          <button type="button" class="nav-link ${state.page === 'admin' ? 'active' : ''}" data-page="admin">Admin</button>
-          <button type="button" class="nav-link ${state.page === 'account' ? 'active' : ''}" data-page="account">${state.user ? state.user.name : 'Account'}</button>
-          ${state.user ? `<button type="button" id="logout-button" class="nav-button">Sign out</button>` : `<button type="button" class="nav-button" data-page="account">Sign in</button>`}
-        </nav>
+        ${isAdminUser ? `
+          <div class="admin-topbar-actions">
+            <button type="button" class="${state.page === 'admin' ? 'primary' : 'secondary'}" data-page="admin">Dashboard</button>
+            <button type="button" class="${state.page === 'admin-chat' ? 'primary' : 'secondary'}" data-page="admin-chat">Inbox</button>
+            <button type="button" class="${state.page === 'home' ? 'primary' : 'secondary'}" data-page="home">View storefront</button>
+            <button type="button" id="logout-button" class="nav-button">Sign out</button>
+          </div>
+        ` : `
+          <nav class="main-nav" aria-label="Main navigation">
+            <button type="button" class="nav-link ${state.page === 'home' ? 'active' : ''}" data-page="home">Home</button>
+            <button type="button" class="nav-link ${state.page === 'shop' ? 'active' : ''}" data-page="shop">Shop</button>
+            <button type="button" class="nav-link ${state.page === 'student' ? 'active' : ''}" data-page="student">Training</button>
+            <button type="button" class="nav-link ${state.page === 'chat' ? 'active' : ''}" data-page="chat">Chat</button>
+            <button type="button" class="nav-link ${state.page === 'cart' ? 'active' : ''}" data-page="cart">Cart (${getCartCount()})</button>
+            ${state.user ? `<button type="button" id="logout-button" class="nav-button">Sign out</button>` : `<button type="button" class="nav-button" data-page="account">Sign in</button>`}
+          </nav>
+        `}
       </header>
 
       <main>${pageContent[state.page] || renderHomeSection()}</main>
@@ -1234,6 +1643,7 @@ function renderApp() {
     button.addEventListener('click', () => {
       const page = button.dataset.page;
       if (page) {
+        if (button.dataset.authReturnPage) state.authReturnPage = button.dataset.authReturnPage;
         navigateToPage(page);
       }
     });
@@ -1265,6 +1675,30 @@ function renderApp() {
   const productForm = document.querySelector('#product-form');
   if (productForm) {
     productForm.addEventListener('submit', addProductFromForm);
+  }
+
+  document.querySelectorAll('.admin-product-edit-form').forEach((form) => {
+    form.addEventListener('submit', updateProduct);
+  });
+
+  document.querySelectorAll('.delete-product-button').forEach((button) => {
+    button.addEventListener('click', () => deleteProduct(button));
+  });
+
+  const trainingSettingsForm = document.querySelector('#training-settings-form');
+  if (trainingSettingsForm) {
+    trainingSettingsForm.addEventListener('submit', saveTrainingSettings);
+    trainingSettingsForm.querySelectorAll('input[name="isOpen"]').forEach((input) => {
+      input.addEventListener('change', () => {
+        trainingSettingsForm.querySelectorAll('.registration-status-option').forEach((option) => {
+          const isSelected = option.querySelector('input').checked;
+          option.classList.toggle('selected', isSelected);
+          option.classList.toggle('open', isSelected && option.querySelector('input').value === 'true');
+          option.classList.toggle('closed', isSelected && option.querySelector('input').value === 'false');
+        });
+        persistTrainingSettings(trainingSettingsForm);
+      });
+    });
   }
 
   const accountForm = document.querySelector('#account-form');
@@ -1303,6 +1737,18 @@ function renderApp() {
 
   const checkoutForm = document.querySelector('#checkout-form');
   if (checkoutForm) checkoutForm.addEventListener('submit', placeOrder);
+
+  const copyAccountButton = document.querySelector('.copy-account-button');
+  if (copyAccountButton) {
+    copyAccountButton.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(state.pendingManualOrder.paymentDetails.accountNumber);
+        showNotification('Account number copied.');
+      } catch {
+        showNotification('Unable to copy the account number on this device.', 'error');
+      }
+    });
+  }
 
   document.querySelectorAll('.fulfillment-option').forEach((input) => {
     input.addEventListener('change', () => {
@@ -1344,6 +1790,13 @@ function renderApp() {
     form.addEventListener('submit', sendChatMessage);
   });
 
+  document.querySelectorAll('.chat-attachment-input').forEach((input) => {
+    input.addEventListener('change', () => {
+      const fileName = input.closest('.chat-compose').querySelector('.chat-file-name');
+      fileName.textContent = input.files[0]?.name || 'Receipt file optional · 5 MB max';
+    });
+  });
+
   const chatConversations = document.querySelector('#admin-chat-conversations');
   if (chatConversations) {
     chatConversations.addEventListener('click', async (event) => {
@@ -1381,6 +1834,7 @@ function renderApp() {
       const data = await response.json();
       state.user = data.user;
       if (state.user.role === 'admin') await loadAdminOverview();
+      else await loadTrainingEnrollments();
     } else {
       localStorage.removeItem('ashmie_auth_token');
     }

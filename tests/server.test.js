@@ -49,6 +49,61 @@ test('GET /api/dashboard returns a dashboard payload', async () => {
   assert.ok(Array.isArray(body.pipeline));
 });
 
+test('passwords are stored as hashes instead of plain text', async () => {
+  const dataFile = path.join(process.cwd(), 'data', 'store.json');
+  const previousStore = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
+
+  try {
+    const app = createApp();
+    const uniqueEmail = createUniqueEmail();
+
+    const signup = await request(app, '/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Secure User', email: uniqueEmail, password: 'secure123' }),
+    });
+
+    assert.equal(signup.response.status, 200);
+    const persistedStore = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    const savedUser = persistedStore.users.find((user) => user.email === uniqueEmail);
+    assert.ok(savedUser);
+    assert.equal(savedUser.password, createHash('sha256').update('secure123').digest('hex'));
+    assert.notEqual(savedUser.password, 'secure123');
+  } finally {
+    if (previousStore === null) fs.rmSync(dataFile, { force: true });
+    else fs.writeFileSync(dataFile, previousStore);
+  }
+});
+
+test('default bootstrap admin credentials can sign in without env configuration', async () => {
+  const dataFile = path.join(process.cwd(), 'data', 'store.json');
+  const previousStore = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
+  const previousAdminEmail = process.env.ADMIN_EMAIL;
+  const previousAdminPassword = process.env.ADMIN_PASSWORD;
+  delete process.env.ADMIN_EMAIL;
+  delete process.env.ADMIN_PASSWORD;
+
+  try {
+    const app = createApp();
+    const login = await request(app, '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@ashmie.io', password: 'admin12345' }),
+    });
+
+    assert.equal(login.response.status, 200);
+    assert.equal(login.body.user.role, 'admin');
+    assert.equal(login.body.user.email, 'admin@ashmie.io');
+  } finally {
+    if (previousStore === null) fs.rmSync(dataFile, { force: true });
+    else fs.writeFileSync(dataFile, previousStore);
+    if (previousAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = previousAdminEmail;
+    if (previousAdminPassword === undefined) delete process.env.ADMIN_PASSWORD;
+    else process.env.ADMIN_PASSWORD = previousAdminPassword;
+  }
+});
+
 test('GET /api/workspace returns a workspace project list', async () => {
   const app = createApp();
 
@@ -161,6 +216,141 @@ test('signup distinguishes customers from admins and rotates the admin key', asy
   }
 });
 
+test('admins manage shop products and Academy registration settings', async () => {
+  const dataFile = path.join(process.cwd(), 'data', 'store.json');
+  const previousStore = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
+  const previousAdminEmail = process.env.ADMIN_EMAIL;
+  const previousAdminPassword = process.env.ADMIN_PASSWORD;
+  const adminEmail = createUniqueEmail();
+  const adminPassword = 'catalog-admin-secure123';
+  process.env.ADMIN_EMAIL = adminEmail;
+  process.env.ADMIN_PASSWORD = adminPassword;
+
+  try {
+    const app = createApp();
+    const adminLogin = await request(app, '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: adminEmail, password: adminPassword }),
+    });
+    const adminAuth = { Authorization: `Bearer ${adminLogin.body.token}`, 'Content-Type': 'application/json' };
+    const customerSignup = await request(app, '/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Catalog Customer', email: createUniqueEmail(), password: 'secure123', accountType: 'customer' }),
+    });
+
+    const productBody = { name: 'Admin Test Cake', category: 'cakes', price: 15000, image: '', description: 'Test product description.' };
+    const createdProduct = await request(app, '/api/admin/products', {
+      method: 'POST',
+      headers: adminAuth,
+      body: JSON.stringify(productBody),
+    });
+    assert.equal(createdProduct.response.status, 201);
+    const productId = createdProduct.body.product.id;
+
+    const forbiddenEdit = await request(app, `/api/admin/products/${productId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${customerSignup.body.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price: 1 }),
+    });
+    assert.equal(forbiddenEdit.response.status, 403);
+
+    const updateProduct = await request(app, `/api/admin/products/${productId}`, {
+      method: 'PATCH',
+      headers: adminAuth,
+      body: JSON.stringify({ ...productBody, price: 17500 }),
+    });
+    assert.equal(updateProduct.response.status, 200);
+    assert.equal(updateProduct.body.product.price, 17500);
+
+    const closePortal = await request(app, '/api/admin/training-settings', {
+      method: 'PUT',
+      headers: adminAuth,
+      body: JSON.stringify({
+        isOpen: false,
+        fees: { 'cake-basic': 42000 },
+        courseDetails: { 'cake-basic': { location: 'Hotoro Behind Chula Fueling Station', date: '2026-11-15', duration: '5 Weeks' } },
+      }),
+    });
+    assert.equal(closePortal.response.status, 200);
+    const updatedTraining = closePortal.body.trainings.find((item) => item.id === 'cake-basic');
+    assert.equal(updatedTraining.fee, 42000);
+    assert.equal(updatedTraining.location, 'Hotoro Behind Chula Fueling Station');
+    assert.equal(updatedTraining.date, '2026-11-15');
+    assert.equal(updatedTraining.duration, '5 Weeks');
+
+    const invalidTrainingDate = await request(app, '/api/admin/training-settings', {
+      method: 'PUT',
+      headers: adminAuth,
+      body: JSON.stringify({
+        isOpen: false,
+        fees: { 'cake-basic': 42000 },
+        courseDetails: { 'cake-basic': { location: 'Hotoro Behind Chula Fueling Station', date: '2026-02-30', duration: '5 Weeks' } },
+      }),
+    });
+    assert.equal(invalidTrainingDate.response.status, 400);
+
+    const closedSettings = await request(app, '/api/training');
+    assert.equal(closedSettings.body.trainingPortalOpen, false);
+    const closedEnrollment = await request(app, '/api/training/enroll', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${customerSignup.body.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trainingId: 'cake-basic' }),
+    });
+    assert.equal(closedEnrollment.response.status, 403);
+
+    await request(app, '/api/admin/training-settings', {
+      method: 'PUT',
+      headers: adminAuth,
+      body: JSON.stringify({ isOpen: true, fees: { 'cake-basic': 42000 } }),
+    });
+    const enrollment = await request(app, '/api/training/enroll', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${customerSignup.body.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trainingId: 'cake-basic' }),
+    });
+    assert.equal(enrollment.response.status, 201);
+    assert.equal(enrollment.body.enrollment.fee, 42000);
+    assert.equal(enrollment.body.enrollment.date, '2026-11-15');
+
+    const rescheduledTraining = await request(app, '/api/admin/training-settings', {
+      method: 'PUT',
+      headers: adminAuth,
+      body: JSON.stringify({
+        isOpen: true,
+        fees: { 'cake-basic': 42000 },
+        courseDetails: { 'cake-basic': { location: 'Hotoro Behind Chula Fueling Station', date: '2026-11-22', duration: '6 Weeks' } },
+      }),
+    });
+    assert.equal(rescheduledTraining.response.status, 200);
+    const refreshedEnrollments = await request(app, '/api/training/enrollments', { headers: { Authorization: `Bearer ${customerSignup.body.token}` } });
+    assert.equal(refreshedEnrollments.body.enrollments[0].date, '2026-11-22');
+
+    const duplicateEnrollment = await request(app, '/api/training/enroll', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${customerSignup.body.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trainingId: 'cake-basic' }),
+    });
+    assert.equal(duplicateEnrollment.response.status, 409);
+
+    const deletedProduct = await request(app, `/api/admin/products/${productId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminLogin.body.token}` },
+    });
+    assert.equal(deletedProduct.response.status, 200);
+    const remainingProducts = await request(app, '/api/products');
+    assert.equal(remainingProducts.body.products.some((item) => item.id === productId), false);
+  } finally {
+    if (previousStore === null) fs.rmSync(dataFile, { force: true });
+    else fs.writeFileSync(dataFile, previousStore);
+    if (previousAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = previousAdminEmail;
+    if (previousAdminPassword === undefined) delete process.env.ADMIN_PASSWORD;
+    else process.env.ADMIN_PASSWORD = previousAdminPassword;
+  }
+});
+
 test('product reviews start empty and customers can add or update their own rating', async () => {
   const dataFile = path.join(process.cwd(), 'data', 'store.json');
   const previousStore = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
@@ -250,6 +440,25 @@ test('chat messages stay in each customer thread and admins can reply', async ()
     assert.equal(sentMessage.response.status, 201);
     assert.equal(sentMessage.body.message.conversationId, firstCustomer.body.user.id);
 
+    const receiptData = Buffer.from('%PDF-1.4\nReceipt\n%%EOF', 'ascii').toString('base64');
+    const sentReceipt = await request(app, '/api/chat/messages', {
+      method: 'POST',
+      headers: firstAuth,
+      body: JSON.stringify({
+        body: 'Here is my transfer receipt.',
+        attachment: { name: 'transfer-receipt.pdf', mimeType: 'application/pdf', dataUrl: `data:application/pdf;base64,${receiptData}` },
+      }),
+    });
+    assert.equal(sentReceipt.response.status, 201);
+    assert.equal(sentReceipt.body.message.attachment.name, 'transfer-receipt.pdf');
+
+    const invalidReceipt = await request(app, '/api/chat/messages', {
+      method: 'POST',
+      headers: firstAuth,
+      body: JSON.stringify({ attachment: { name: 'receipt.pdf', mimeType: 'application/pdf', dataUrl: 'data:application/pdf;base64,aGVsbG8=' } }),
+    });
+    assert.equal(invalidReceipt.response.status, 400);
+
     const secondThread = await request(app, '/api/chat/messages', { headers: secondAuth });
     assert.deepEqual(secondThread.body.messages, []);
     const adminDenied = await request(app, '/api/admin/chat/conversations', { headers: secondAuth });
@@ -264,10 +473,11 @@ test('chat messages stay in each customer thread and admins can reply', async ()
     const inbox = await request(app, '/api/admin/chat/conversations', { headers: adminAuth });
     assert.equal(inbox.body.conversations.length, 1);
     assert.equal(inbox.body.conversations[0].conversationId, firstCustomer.body.user.id);
-    assert.equal(inbox.body.conversations[0].unreadCount, 1);
+    assert.equal(inbox.body.conversations[0].unreadCount, 2);
 
     const adminThread = await request(app, `/api/chat/messages?conversationId=${firstCustomer.body.user.id}`, { headers: adminAuth });
     assert.equal(adminThread.response.status, 200);
+    assert.equal(adminThread.body.messages[1].attachment.name, 'transfer-receipt.pdf');
     const readInbox = await request(app, '/api/admin/chat/conversations', { headers: adminAuth });
     assert.equal(readInbox.body.conversations[0].unreadCount, 0);
 
@@ -278,8 +488,8 @@ test('chat messages stay in each customer thread and admins can reply', async ()
     });
     assert.equal(reply.response.status, 201);
     const firstThread = await request(app, '/api/chat/messages', { headers: firstAuth });
-    assert.equal(firstThread.body.messages.length, 2);
-    assert.equal(firstThread.body.messages[1].senderRole, 'admin');
+    assert.equal(firstThread.body.messages.length, 3);
+    assert.equal(firstThread.body.messages[2].senderRole, 'admin');
   } finally {
     if (previousStore === null) fs.rmSync(dataFile, { force: true });
     else fs.writeFileSync(dataFile, previousStore);
@@ -359,6 +569,51 @@ test('configured administrator can manage payment details and invite another adm
     else process.env.ADMIN_EMAIL = previousAdminEmail;
     if (previousAdminPassword === undefined) delete process.env.ADMIN_PASSWORD;
     else process.env.ADMIN_PASSWORD = previousAdminPassword;
+  }
+});
+
+test('checkout creates a pending bank transfer order when Paystack is not configured', async () => {
+  const dataFile = path.join(process.cwd(), 'data', 'store.json');
+  const previousStore = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
+  const previousSecret = process.env.PAYSTACK_SECRET_KEY;
+  delete process.env.PAYSTACK_SECRET_KEY;
+
+  try {
+    const existingStore = previousStore ? JSON.parse(previousStore) : {};
+    existingStore.paymentDetails = {
+      ...(existingStore.paymentDetails || {}),
+      bankName: 'Test Bank',
+      accountName: 'Ashmie Cakes',
+      accountNumber: '1234567890',
+      instructions: 'Use your order reference.',
+      deliveryFee: 2400,
+    };
+    fs.writeFileSync(dataFile, JSON.stringify(existingStore, null, 2));
+    const app = createApp();
+    const checkout = await request(app, '/api/payments/initialize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customer: { name: 'Manual Pay Customer', email: createUniqueEmail(), phone: '+2348000000000' },
+        items: [{ id: 'strawberry-royale', quantity: 1, price: 1 }],
+        deliveryMethod: 'delivery',
+        deliveryAddress: '12 Baker Street, Lagos',
+      }),
+    });
+
+    assert.equal(checkout.response.status, 201);
+    assert.equal(checkout.body.paymentMethod, 'bank-transfer');
+    assert.equal(checkout.body.paymentDetails.accountNumber, '1234567890');
+    assert.equal(checkout.body.order.total, 20400);
+    const savedStore = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    const savedOrder = savedStore.orders.find((order) => order.id === checkout.body.order.id);
+    assert.equal(savedOrder.paymentStatus, 'pending');
+    assert.equal(savedOrder.status, 'Awaiting payment');
+  } finally {
+    if (previousStore === null) fs.rmSync(dataFile, { force: true });
+    else fs.writeFileSync(dataFile, previousStore);
+    if (previousSecret === undefined) delete process.env.PAYSTACK_SECRET_KEY;
+    else process.env.PAYSTACK_SECRET_KEY = previousSecret;
   }
 });
 

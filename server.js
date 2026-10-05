@@ -13,15 +13,35 @@ const dataFile = path.join(dataDir, 'store.json');
 const port = Number(process.env.PORT) || 3001;
 const sessions = new Map();
 const defaultAdminSignupCodeHash = createHash('sha256').update('RAJI').digest('hex');
+const defaultAdminCredentials = {
+  email: 'admin@ashmie.io',
+  password: 'admin12345',
+  name: 'Ashmie Administrator',
+};
 
 function hashAdminSignupCode(code) {
   return createHash('sha256').update(String(code)).digest('hex');
+}
+
+function hashPassword(password) {
+  return createHash('sha256').update(String(password)).digest('hex');
 }
 
 function isValidAdminSignupCode(code, storedHash) {
   const expected = Buffer.from(storedHash, 'hex');
   const provided = Buffer.from(hashAdminSignupCode(code), 'hex');
   return expected.length === provided.length && timingSafeEqual(expected, provided);
+}
+
+function verifyPassword(password, storedPassword) {
+  if (!storedPassword) return false;
+  const value = String(storedPassword);
+  if (value.length === 64 && /^[a-f0-9]+$/i.test(value)) {
+    const expected = Buffer.from(value, 'hex');
+    const provided = Buffer.from(hashPassword(password), 'hex');
+    return expected.length === provided.length && timingSafeEqual(expected, provided);
+  }
+  return value === String(password);
 }
 
 const defaultPaymentDetails = {
@@ -36,19 +56,19 @@ const demoUser = {
   id: 'demo-user',
   name: 'Ava Morgan',
   email: 'ava@ashmie.io',
-  password: 'demo123',
+  password: hashPassword('demo123'),
   plan: 'Growth',
   role: 'Product Lead',
 };
 
 const bakerySite = {
   name: 'ASHMIE CAKES & MORE',
-  tagline: 'Fresh cakes, pastries, snacks and sweet moments for every celebration.',
+  tagline: 'Cakes, pastries & treats for every celebration.',
   description: 'Ashmie Cakes & More creates delightful cakes, pastries and snacks for birthdays, events and everyday treats across Nigeria.',
   phone: '+234 806 577 0291',
   email: 'ashmiecakesinfo@gmail.com',
   whatsapp: '+234 806 577 0291',
-  address: 'Kano, Nigeria',
+  address: 'Hotoro Behind Chula Fueling Station',
 };
 
 const bakeryCategories = [
@@ -72,9 +92,9 @@ const bakeryProducts = [
 ];
 
 const bakeryTraining = [
-  { id: 'cake-basic', title: 'Cake Making Fundamentals', duration: '2 Weeks', fee: 35000, seats: 18, date: '12 Oct 2026', location: 'Lagos Studio', status: 'Open', topics: ['Cake mixing', 'Batter science', 'Basic decoration'] },
-  { id: 'decor-masterclass', title: 'Advanced Decoration Masterclass', duration: '3 Weeks', fee: 48000, seats: 12, date: '20 Oct 2026', location: 'Yaba Training Hub', status: 'Open', topics: ['Buttercream art', 'Fondant detailing', 'Event styling'] },
-  { id: 'snack-production', title: 'Snacks & Pastry Production', duration: '4 Weeks', fee: 55000, seats: 10, date: '02 Nov 2026', location: 'Lekki Academy', status: 'Open', topics: ['Small chops production', 'Pastry folding', 'Packaging'] },
+  { id: 'cake-basic', title: 'Cake Making Fundamentals', duration: '2 Weeks', fee: 35000, seats: 18, date: '2026-10-12', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Cake mixing', 'Batter science', 'Basic decoration'] },
+  { id: 'decor-masterclass', title: 'Advanced Decoration Masterclass', duration: '3 Weeks', fee: 48000, seats: 12, date: '2026-10-20', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Buttercream art', 'Fondant detailing', 'Event styling'] },
+  { id: 'snack-production', title: 'Snacks & Pastry Production', duration: '4 Weeks', fee: 55000, seats: 10, date: '2026-11-02', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Small chops production', 'Pastry folding', 'Packaging'] },
 ];
 
 const galleryItems = [
@@ -126,6 +146,10 @@ const pricingData = {
 
 const seedStore = {
   users: [demoUser],
+  products: bakeryProducts,
+  trainings: bakeryTraining,
+  trainingPortalOpen: true,
+  trainingEnrollments: [],
   paymentDetails: defaultPaymentDetails,
   orders: [],
   reviews: [],
@@ -139,9 +163,26 @@ const seedStore = {
 };
 
 function normalizeStore(store = {}) {
+  const normalizedUsers = Array.isArray(store.users) ? store.users : [];
+  const defaultAdminUser = {
+    id: 'admin-bootstrap',
+    name: defaultAdminCredentials.name,
+    email: defaultAdminCredentials.email,
+    password: hashPassword(defaultAdminCredentials.password),
+    role: 'admin',
+  };
+
+  const users = normalizedUsers.some((user) => user.email?.toLowerCase() === defaultAdminCredentials.email)
+    ? normalizedUsers
+    : [defaultAdminUser, ...normalizedUsers];
+
   return {
-    users: Array.isArray(store.users) ? store.users : [],
+    users,
     projects: Array.isArray(store.projects) ? store.projects : [],
+    products: Array.isArray(store.products) ? store.products : bakeryProducts,
+    trainings: Array.isArray(store.trainings) ? store.trainings : bakeryTraining,
+    trainingPortalOpen: typeof store.trainingPortalOpen === 'boolean' ? store.trainingPortalOpen : true,
+    trainingEnrollments: Array.isArray(store.trainingEnrollments) ? store.trainingEnrollments : [],
     paymentDetails: { ...defaultPaymentDetails, ...(store.paymentDetails || {}) },
     orders: Array.isArray(store.orders) ? store.orders : [],
     reviews: Array.isArray(store.reviews) ? store.reviews : [],
@@ -171,7 +212,7 @@ function readDataStore() {
     const parsed = JSON.parse(raw);
     const normalized = normalizeStore(parsed);
 
-    if (!parsed || !Array.isArray(parsed.users) || !Array.isArray(parsed.projects)) {
+    if (!parsed || !Array.isArray(parsed.users) || !Array.isArray(parsed.projects) || !Array.isArray(parsed.products) || !Array.isArray(parsed.trainings) || typeof parsed.trainingPortalOpen !== 'boolean' || !Array.isArray(parsed.trainingEnrollments)) {
       writeDataStore(normalized);
     }
 
@@ -235,7 +276,7 @@ export function createApp() {
   app.disable('x-powered-by');
   app.set('trust proxy', true);
   app.use('/api/paystack/webhook', express.raw({ type: 'application/json' }));
-  app.use(express.json());
+  app.use(express.json({ limit: '8mb' }));
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -266,11 +307,13 @@ export function createApp() {
   });
 
   app.get('/api/site', (_req, res) => {
+    const store = readDataStore();
     res.json({
       site: bakerySite,
       categories: bakeryCategories,
-      products: bakeryProducts,
-      trainings: bakeryTraining,
+      products: store.products,
+      trainings: store.trainings,
+      trainingPortalOpen: store.trainingPortalOpen,
       gallery: galleryItems,
     });
   });
@@ -280,7 +323,58 @@ export function createApp() {
   });
 
   app.get('/api/products', (_req, res) => {
-    res.json({ products: bakeryProducts });
+    const { products } = readDataStore();
+    res.json({ products });
+  });
+
+  app.post('/api/admin/products', requireUser, requireAdmin, (req, res) => {
+    const name = String(req.body?.name || '').trim();
+    const category = String(req.body?.category || '').trim();
+    const description = String(req.body?.description || '').trim();
+    const price = Number(req.body?.price);
+    const image = String(req.body?.image || '').trim();
+    if (!name || !category || !description || !Number.isFinite(price) || price <= 0) {
+      return res.status(400).json({ message: 'Enter a name, category, description, and positive price.' });
+    }
+    const product = {
+      id: `product-${randomUUID()}`,
+      name,
+      category,
+      description,
+      price,
+      image: image || bakeryProducts[0].image,
+      featured: false,
+    };
+    const store = readDataStore();
+    store.products.unshift(product);
+    writeDataStore(store);
+    return res.status(201).json({ product });
+  });
+
+  app.patch('/api/admin/products/:productId', requireUser, requireAdmin, (req, res) => {
+    const store = readDataStore();
+    const product = store.products.find((entry) => entry.id === req.params.productId);
+    if (!product) return res.status(404).json({ message: 'Product not found.' });
+    const name = String(req.body?.name ?? product.name).trim();
+    const category = String(req.body?.category ?? product.category).trim();
+    const description = String(req.body?.description ?? product.description).trim();
+    const price = Number(req.body?.price ?? product.price);
+    const image = String(req.body?.image ?? product.image).trim();
+    if (!name || !category || !description || !Number.isFinite(price) || price <= 0) {
+      return res.status(400).json({ message: 'Enter a name, category, description, and positive price.' });
+    }
+    Object.assign(product, { name, category, description, price, image });
+    writeDataStore(store);
+    return res.json({ product });
+  });
+
+  app.delete('/api/admin/products/:productId', requireUser, requireAdmin, (req, res) => {
+    const store = readDataStore();
+    const productIndex = store.products.findIndex((entry) => entry.id === req.params.productId);
+    if (productIndex === -1) return res.status(404).json({ message: 'Product not found.' });
+    const [product] = store.products.splice(productIndex, 1);
+    writeDataStore(store);
+    return res.json({ productId: product.id, deleted: true });
   });
 
   app.get('/api/reviews', (req, res) => {
@@ -351,8 +445,38 @@ export function createApp() {
 
   app.post('/api/chat/messages', requireUser, (req, res) => {
     const body = String(req.body?.body || '').trim();
-    if (body.length < 1 || body.length > 2000) {
-      return res.status(400).json({ message: 'Message must be between 1 and 2000 characters.' });
+    let attachment = null;
+    if (req.body?.attachment !== undefined) {
+      const submitted = req.body.attachment;
+      const dataUrlMatch = typeof submitted?.dataUrl === 'string'
+        ? /^data:(application\/pdf|image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(submitted.dataUrl)
+        : null;
+      if (!dataUrlMatch || submitted.mimeType !== dataUrlMatch[1]) {
+        return res.status(400).json({ message: 'Attach a PNG, JPEG, WebP, or PDF receipt.' });
+      }
+
+      const bytes = Buffer.from(dataUrlMatch[2], 'base64');
+      const signatureMatches = {
+        'application/pdf': bytes.subarray(0, 5).toString('ascii') === '%PDF-',
+        'image/jpeg': bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
+        'image/png': bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+        'image/webp': bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP',
+      }[dataUrlMatch[1]];
+      if (!bytes.length || bytes.length > 5 * 1024 * 1024 || bytes.toString('base64') !== dataUrlMatch[2] || !signatureMatches) {
+        return res.status(400).json({ message: 'The receipt file is invalid or larger than 5 MB.' });
+      }
+
+      const name = [...String(submitted.name || 'receipt')]
+        .map((character) => {
+          const code = character.charCodeAt(0);
+          return character === '\\' || character === '/' || code < 0x20 || code === 0x7f ? '_' : character;
+        })
+        .join('')
+        .slice(0, 120);
+      attachment = { name, mimeType: dataUrlMatch[1], dataUrl: submitted.dataUrl, size: bytes.length };
+    }
+    if (body.length > 2000 || (!body && !attachment)) {
+      return res.status(400).json({ message: 'Add a message (up to 2000 characters) or attach a receipt.' });
     }
 
     let conversationId = req.user.id;
@@ -370,6 +494,7 @@ export function createApp() {
       senderRole: req.user.role === 'admin' ? 'admin' : 'customer',
       senderName: req.user.name,
       body,
+      attachment,
       createdAt: new Date().toISOString(),
       readByAdmin: req.user.role === 'admin',
     };
@@ -386,7 +511,8 @@ export function createApp() {
     const productId = String(req.body?.productId || '').trim();
     const rating = Number(req.body?.rating);
     const comment = String(req.body?.comment || '').trim();
-    if (!bakeryProducts.some((product) => product.id === productId)) {
+    const store = readDataStore();
+    if (!store.products.some((product) => product.id === productId)) {
       return res.status(404).json({ message: 'Product not found.' });
     }
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
@@ -396,7 +522,6 @@ export function createApp() {
       return res.status(400).json({ message: 'Review must be between 3 and 1000 characters.' });
     }
 
-    const store = readDataStore();
     const existingReview = store.reviews.find((review) => review.productId === productId && review.userId === req.user.id);
     const review = {
       id: existingReview?.id || `review-${randomUUID()}`,
@@ -419,11 +544,44 @@ export function createApp() {
   });
 
   app.get('/api/training', (_req, res) => {
-    res.json({ trainings: bakeryTraining });
+    const { trainings, trainingPortalOpen } = readDataStore();
+    res.json({ trainings, trainingPortalOpen });
+  });
+
+  app.get('/api/training/enrollments', requireUser, (req, res) => {
+    const { trainingEnrollments = [] } = readDataStore();
+    res.json({ enrollments: trainingEnrollments.filter((entry) => entry.userId === req.user.id) });
+  });
+
+  app.post('/api/training/enroll', requireUser, (req, res) => {
+    if (req.user.role === 'admin') return res.status(403).json({ message: 'Admin accounts cannot enroll as students.' });
+    const trainingId = String(req.body?.trainingId || '').trim();
+    const store = readDataStore();
+    if (!store.trainingPortalOpen) return res.status(403).json({ message: 'Training registration is currently closed.' });
+    const training = store.trainings.find((entry) => entry.id === trainingId);
+    if (!training) return res.status(404).json({ message: 'Training course not found.' });
+    const existing = store.trainingEnrollments.find((entry) => entry.trainingId === trainingId && entry.userId === req.user.id);
+    if (existing) return res.status(409).json({ message: 'You are already enrolled in this course.' });
+
+    const enrollment = {
+      id: `enrollment-${randomUUID()}`,
+      trainingId,
+      title: training.title,
+      fee: training.fee,
+      userId: req.user.id,
+      email: req.user.email,
+      student: req.user.name,
+      date: training.date,
+      status: 'Booked',
+      createdAt: new Date().toISOString(),
+    };
+    store.trainingEnrollments.push(enrollment);
+    writeDataStore(store);
+    return res.status(201).json({ enrollment });
   });
 
   app.get('/api/admin/overview', requireUser, requireAdmin, (_req, res) => {
-    const { orders = [], reviews = [], users = [] } = readDataStore();
+    const { orders = [], reviews = [], users = [], products = [], trainings = [], trainingPortalOpen = true } = readDataStore();
     const today = new Date().toISOString().slice(0, 10);
     const todaysOrders = orders.filter((order) => String(order.createdAt || '').startsWith(today));
     const paidOrders = orders.filter((order) => order.paymentStatus === 'success');
@@ -445,7 +603,51 @@ export function createApp() {
         paymentStatus: order.paymentStatus,
       })),
       recentReviews: reviews.slice(-5).reverse(),
+      products,
+      trainings,
+      trainingPortalOpen,
     });
+  });
+
+  app.put('/api/admin/training-settings', requireUser, requireAdmin, (req, res) => {
+    const { isOpen, fees, courseDetails = {} } = req.body || {};
+    if (typeof isOpen !== 'boolean' || !fees || typeof fees !== 'object' || Array.isArray(fees)) {
+      return res.status(400).json({ message: 'Provide the portal status and course fees.' });
+    }
+    if (!courseDetails || typeof courseDetails !== 'object' || Array.isArray(courseDetails)) {
+      return res.status(400).json({ message: 'Provide valid training course details.' });
+    }
+    const store = readDataStore();
+    for (const training of store.trainings) {
+      if (fees[training.id] === undefined) continue;
+      const fee = Number(fees[training.id]);
+      if (!Number.isFinite(fee) || fee <= 0) {
+        return res.status(400).json({ message: `Enter a positive fee for ${training.title}.` });
+      }
+      training.fee = fee;
+    }
+    for (const training of store.trainings) {
+      const details = courseDetails[training.id];
+      if (!details) continue;
+      const location = String(details.location ?? training.location).trim();
+      const duration = String(details.duration ?? training.duration).trim();
+      const date = String(details.date ?? training.date).trim();
+      const parsedDate = new Date(`${date}T00:00:00.000Z`);
+      if (!location || location.length > 200 || !duration || duration.length > 80
+        || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) {
+        return res.status(400).json({ message: `Enter a valid location, starting date, and duration for ${training.title}.` });
+      }
+      const dateChanged = training.date !== date;
+      Object.assign(training, { location, duration, date });
+      if (dateChanged) {
+        for (const enrollment of store.trainingEnrollments) {
+          if (enrollment.trainingId === training.id) enrollment.date = date;
+        }
+      }
+    }
+    store.trainingPortalOpen = isOpen;
+    writeDataStore(store);
+    return res.json({ trainingPortalOpen: store.trainingPortalOpen, trainings: store.trainings });
   });
 
   app.patch('/api/admin/orders/:orderId/status', requireUser, requireAdmin, (req, res) => {
@@ -490,7 +692,6 @@ export function createApp() {
 
   app.post('/api/payments/initialize', async (req, res) => {
     const secretKey = process.env.PAYSTACK_SECRET_KEY;
-    if (!secretKey) return res.status(503).json({ message: 'Online payment is not configured yet.' });
 
     const { customer = {}, items = [], deliveryMethod = 'delivery', deliveryAddress = '' } = req.body || {};
     const customerName = String(customer.name || '').trim();
@@ -510,9 +711,10 @@ export function createApp() {
       return res.status(400).json({ message: 'A delivery address is required.' });
     }
 
+    const store = readDataStore();
     const pricedItems = [];
     for (const entry of items) {
-      const product = bakeryProducts.find((item) => item.id === String(entry.id));
+      const product = store.products.find((item) => item.id === String(entry.id));
       const quantity = Number(entry.quantity);
       if (!product || !Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
         return res.status(400).json({ message: 'One or more cart items are invalid.' });
@@ -526,7 +728,6 @@ export function createApp() {
       });
     }
 
-    const store = readDataStore();
     const subtotal = pricedItems.reduce((sum, item) => sum + item.total, 0);
     const deliveryFee = deliveryMethod === 'delivery' ? Number(store.paymentDetails.deliveryFee) || 0 : 0;
     const total = subtotal + deliveryFee;
@@ -547,6 +748,24 @@ export function createApp() {
       status: 'Awaiting payment',
       createdAt: new Date().toISOString(),
     };
+
+    if (!secretKey) {
+      store.orders.push(order);
+      writeDataStore(store);
+      return res.status(201).json({
+        paymentMethod: 'bank-transfer',
+        order: {
+          id: order.id,
+          reference: order.reference,
+          items: order.items,
+          subtotal: order.subtotal,
+          deliveryFee: order.deliveryFee,
+          total: order.total,
+          deliveryMethod: order.deliveryMethod,
+        },
+        paymentDetails: store.paymentDetails,
+      });
+    }
 
     try {
       const providerResponse = await fetch('https://api.paystack.co/transaction/initialize', {
@@ -694,7 +913,7 @@ export function createApp() {
       id: `admin-${randomUUID()}`,
       name: normalizedName,
       email: normalizedEmail,
-      password: normalizedPassword,
+      password: hashPassword(normalizedPassword),
       role: 'admin',
     };
     store.users.push(admin);
@@ -717,31 +936,50 @@ export function createApp() {
   app.post('/api/auth/login', (req, res) => {
     const { email = '', password = '' } = req.body || {};
     const normalizedEmail = String(email).trim().toLowerCase();
+    const providedPassword = String(password);
 
-    if (!normalizedEmail || !String(password).trim()) {
+    if (!normalizedEmail || !providedPassword.trim()) {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
     const store = readDataStore();
-    let user = store.users.find(
-      (entry) => entry.email.toLowerCase() === normalizedEmail && entry.password === String(password)
-    );
+    let user = store.users.find((entry) => entry.email.toLowerCase() === normalizedEmail && verifyPassword(providedPassword, entry.password));
 
     const adminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
     const adminPassword = String(process.env.ADMIN_PASSWORD || '');
-    if (adminEmail && adminPassword && normalizedEmail === adminEmail && String(password) === adminPassword) {
+    if (adminEmail && adminPassword && normalizedEmail === adminEmail && providedPassword === adminPassword) {
       user = store.users.find((entry) => entry.email.toLowerCase() === adminEmail);
       if (!user) {
         user = {
           id: `admin-${randomUUID()}`,
           name: 'Ashmie Administrator',
           email: adminEmail,
+          password: hashPassword(adminPassword),
           role: 'admin',
         };
         store.users.push(user);
       } else {
         user.role = 'admin';
-        delete user.password;
+        user.password = hashPassword(adminPassword);
+      }
+      writeDataStore(store);
+    }
+
+    if (!user && normalizedEmail === defaultAdminCredentials.email && providedPassword === defaultAdminCredentials.password) {
+      user = store.users.find((entry) => entry.email.toLowerCase() === defaultAdminCredentials.email) || {
+        id: `admin-${randomUUID()}`,
+        name: defaultAdminCredentials.name,
+        email: defaultAdminCredentials.email,
+        password: hashPassword(defaultAdminCredentials.password),
+        role: 'admin',
+      };
+      if (!store.users.some((entry) => entry.email.toLowerCase() === defaultAdminCredentials.email)) {
+        store.users.unshift(user);
+      } else {
+        const existingUser = store.users.find((entry) => entry.email.toLowerCase() === defaultAdminCredentials.email);
+        existingUser.role = 'admin';
+        existingUser.password = hashPassword(defaultAdminCredentials.password);
+        user = existingUser;
       }
       writeDataStore(store);
     }
@@ -786,7 +1024,7 @@ export function createApp() {
       id: `user-${randomUUID()}`,
       name: normalizedName,
       email: normalizedEmail,
-      password: normalizedPassword,
+      password: hashPassword(normalizedPassword),
       plan: 'Starter',
       role: accountType,
     };

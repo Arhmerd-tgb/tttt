@@ -104,7 +104,7 @@ ADMIN_PASSWORD=replace-with-a-long-unique-password
 PAYSTACK_SECRET_KEY=sk_test_your_secret_key
 PAYSTACK_CALLBACK_URL=
 VITE_APP_NAME=ASHMIE CAKES & MORE
-VITE_APP_TAGLINE=Fresh cakes, pastries, snacks and sweet moments for every celebration.
+VITE_APP_TAGLINE=Cakes, pastries & treats for every celebration.
 VITE_APP_DESCRIPTION=Ashmie Cakes & More creates delightful cakes, pastries and snacks for birthdays, events and everyday treats across Nigeria.
 ```
 
