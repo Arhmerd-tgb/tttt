@@ -2,15 +2,40 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=5" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https: wss: ws:; font-src 'self' data:; manifest-src 'self'"
+    />
     <meta
       name="description"
       content="ASHMIE CAKES & MORE offers custom cakes, pastries, snacks, desserts and practical baking training in Nigeria."
     />
+    <meta name="theme-color" content="#fffaf6" />
+    <meta name="color-scheme" content="light" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Ashmie" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-180.png" />
     <title>ASHMIE CAKES & MORE</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="boot-splash" role="status" aria-live="polite">
+        <img src="/ashmie-logo.jpeg" alt="" />
+        <strong>ASHMIE CAKES &amp; MORE</strong>
+        <span>Loading your bakery…</span>
+      </div>
+    </div>
+    <noscript>
+      <div class="boot-splash">
+        <strong>JavaScript is required</strong>
+        <span>Enable JavaScript to use the Ashmie app.</span>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

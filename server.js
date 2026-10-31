@@ -3,7 +3,7 @@ import 'dotenv/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,7 +11,15 @@ const distPath = path.join(__dirname, 'dist');
 const dataDir = path.join(__dirname, 'data');
 const dataFile = path.join(dataDir, 'store.json');
 const port = Number(process.env.PORT) || 3001;
-const sessions = new Map();
+const isProduction = process.env.NODE_ENV === 'production';
+const allowDefaultAdmin = !isProduction || process.env.ALLOW_DEFAULT_ADMIN === 'true';
+const sessionTtlMs = Math.min(
+  Math.max(Number(process.env.SESSION_TTL_HOURS || 24 * 30), 1),
+  24 * 365,
+) * 60 * 60 * 1000;
+const PASSWORD_HASH_PREFIX = 'scrypt';
+const PASSWORD_KEY_LENGTH = 64;
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const defaultAdminSignupCodeHash = createHash('sha256').update('RAJI').digest('hex');
 const defaultAdminCredentials = {
   email: 'admin@ashmie.io',
@@ -23,25 +31,126 @@ function hashAdminSignupCode(code) {
   return createHash('sha256').update(String(code)).digest('hex');
 }
 
-function hashPassword(password) {
-  return createHash('sha256').update(String(password)).digest('hex');
-}
-
 function isValidAdminSignupCode(code, storedHash) {
-  const expected = Buffer.from(storedHash, 'hex');
+  if (!storedHash) return false;
+  const expected = Buffer.from(String(storedHash), 'hex');
   const provided = Buffer.from(hashAdminSignupCode(code), 'hex');
   return expected.length === provided.length && timingSafeEqual(expected, provided);
+}
+
+function timingSafeEqualStrings(left, right) {
+  const expected = Buffer.from(String(left));
+  const provided = Buffer.from(String(right));
+  return expected.length === provided.length && timingSafeEqual(expected, provided);
+}
+
+function hashPassword(password) {
+  const salt = randomBytes(16);
+  const derived = scryptSync(String(password), salt, PASSWORD_KEY_LENGTH);
+  return `${PASSWORD_HASH_PREFIX}$${salt.toString('hex')}$${derived.toString('hex')}`;
 }
 
 function verifyPassword(password, storedPassword) {
   if (!storedPassword) return false;
   const value = String(storedPassword);
-  if (value.length === 64 && /^[a-f0-9]+$/i.test(value)) {
-    const expected = Buffer.from(value, 'hex');
-    const provided = Buffer.from(hashPassword(password), 'hex');
-    return expected.length === provided.length && timingSafeEqual(expected, provided);
+
+  if (value.startsWith(`${PASSWORD_HASH_PREFIX}$`)) {
+    const [, saltHex, hashHex] = value.split('$');
+    if (!saltHex || !hashHex) return false;
+    try {
+      const expected = Buffer.from(hashHex, 'hex');
+      const provided = scryptSync(String(password), Buffer.from(saltHex, 'hex'), expected.length);
+      return expected.length === provided.length && timingSafeEqual(expected, provided);
+    } catch {
+      return false;
+    }
   }
-  return value === String(password);
+
+  if (value.length === 64 && /^[a-f0-9]+$/i.test(value)) {
+    return timingSafeEqualStrings(createHash('sha256').update(String(password)).digest('hex'), value);
+  }
+
+  return timingSafeEqualStrings(String(password), value);
+}
+
+function passwordNeedsUpgrade(storedPassword) {
+  return typeof storedPassword === 'string' && !storedPassword.startsWith(`${PASSWORD_HASH_PREFIX}$`);
+}
+
+function hashSessionToken(token) {
+  return createHash('sha256').update(String(token)).digest('hex');
+}
+
+function pruneSessions(store) {
+  const now = Date.now();
+  store.sessions = (Array.isArray(store.sessions) ? store.sessions : [])
+    .filter((session) => Number(session?.expiresAt) > now);
+  return store;
+}
+
+function createToken(user, store) {
+  const token = randomBytes(32).toString('base64url');
+  const now = Date.now();
+  pruneSessions(store);
+  store.sessions.push({
+    tokenHash: hashSessionToken(token),
+    userId: user.id,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: now + sessionTtlMs,
+  });
+  writeDataStore(store);
+  return token;
+}
+
+function resolveUserFromToken(token) {
+  if (!token || String(token).length > 512) return null;
+  const store = pruneSessions(readDataStore());
+  const tokenHash = hashSessionToken(token);
+  const session = store.sessions.find((entry) => entry.tokenHash === tokenHash && Number(entry.expiresAt) > Date.now());
+  if (!session) return null;
+  return store.users.find((user) => user.id === session.userId) || null;
+}
+
+function deleteSession(token) {
+  const store = readDataStore();
+  const tokenHash = hashSessionToken(token);
+  const remaining = store.sessions.filter((entry) => entry.tokenHash !== tokenHash);
+  if (remaining.length !== store.sessions.length) {
+    store.sessions = remaining;
+    writeDataStore(store);
+  }
+}
+
+function sanitizeImageSource(input) {
+  const value = String(input || '').trim();
+  if (!value) return '';
+
+  const dataUrlMatch = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  if (dataUrlMatch) {
+    let bytes;
+    try {
+      bytes = Buffer.from(dataUrlMatch[2], 'base64');
+    } catch {
+      return '';
+    }
+    const signatureMatches = {
+      'image/jpeg': bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
+      'image/png': bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+      'image/webp': bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP',
+    }[dataUrlMatch[1]];
+    if (!bytes.length || bytes.length > MAX_IMAGE_BYTES || bytes.toString('base64') !== dataUrlMatch[2] || !signatureMatches) {
+      return '';
+    }
+    return value;
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === 'https:') return parsed.toString();
+  } catch {
+    return '';
+  }
+  return '';
 }
 
 const defaultPaymentDetails = {
@@ -154,6 +263,7 @@ const seedStore = {
   orders: [],
   reviews: [],
   chatMessages: [],
+  sessions: [],
   adminSignupCodeHash: defaultAdminSignupCodeHash,
   projects: [
     { id: 'proj-1', name: 'Northstar launch', description: 'Launch positioning refresh', owner: 'demo-user', status: 'In review', progress: 82, due: 'Today' },
@@ -172,9 +282,17 @@ function normalizeStore(store = {}) {
     role: 'admin',
   };
 
-  const users = normalizedUsers.some((user) => user.email?.toLowerCase() === defaultAdminCredentials.email)
-    ? normalizedUsers
-    : [defaultAdminUser, ...normalizedUsers];
+  const hasDefaultAdmin = normalizedUsers.some((user) => user.email?.toLowerCase() === defaultAdminCredentials.email);
+  const users = allowDefaultAdmin && !hasDefaultAdmin
+    ? [defaultAdminUser, ...normalizedUsers]
+    : normalizedUsers;
+
+  const configuredSignupCodeHash = process.env.ADMIN_SIGNUP_CODE
+    ? hashAdminSignupCode(process.env.ADMIN_SIGNUP_CODE)
+    : null;
+  const adminSignupCodeHash = typeof store.adminSignupCodeHash === 'string' && store.adminSignupCodeHash.length === 64
+    ? store.adminSignupCodeHash
+    : configuredSignupCodeHash || (isProduction ? null : defaultAdminSignupCodeHash);
 
   return {
     users,
@@ -187,9 +305,8 @@ function normalizeStore(store = {}) {
     orders: Array.isArray(store.orders) ? store.orders : [],
     reviews: Array.isArray(store.reviews) ? store.reviews : [],
     chatMessages: Array.isArray(store.chatMessages) ? store.chatMessages : [],
-    adminSignupCodeHash: typeof store.adminSignupCodeHash === 'string' && store.adminSignupCodeHash.length === 64
-      ? store.adminSignupCodeHash
-      : defaultAdminSignupCodeHash,
+    sessions: Array.isArray(store.sessions) ? store.sessions.filter((session) => Number(session?.expiresAt) > Date.now()) : [],
+    adminSignupCodeHash,
   };
 }
 
@@ -227,7 +344,9 @@ function readDataStore() {
 function writeDataStore(store) {
   ensureDataStore();
   const normalizedStore = normalizeStore(store);
-  fs.writeFileSync(dataFile, JSON.stringify(normalizedStore, null, 2));
+  const temporaryFile = `${dataFile}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryFile, JSON.stringify(normalizedStore, null, 2));
+  fs.renameSync(temporaryFile, dataFile);
 }
 
 function toPublicUser(user) {
@@ -238,20 +357,6 @@ function toPublicUser(user) {
     plan: user.plan || 'Starter',
     role: user.role || 'customer',
   };
-}
-
-function createToken(user) {
-  const token = randomUUID();
-  sessions.set(token, user.id);
-  return token;
-}
-
-function resolveUserFromToken(token) {
-  if (!token) return null;
-  const id = sessions.get(token);
-  if (!id) return null;
-  const store = readDataStore();
-  return store.users.find((user) => user.id === id) || null;
 }
 
 function requireUser(req, res, next) {
@@ -270,12 +375,110 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
+function createRateLimiter({ windowMs, max, message }) {
+  const buckets = new Map();
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of buckets) {
+      if (entry.resetAt <= now) buckets.delete(key);
+    }
+  }, windowMs);
+  cleanup.unref?.();
+
+  return (req, res, next) => {
+    const key = req.ip || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    let entry = buckets.get(key);
+    if (!entry || entry.resetAt <= now) {
+      entry = { count: 0, resetAt: now + windowMs };
+      buckets.set(key, entry);
+    }
+    entry.count += 1;
+    if (entry.count > max) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((entry.resetAt - now) / 1000))));
+      return res.status(429).json({ message: message || 'Too many requests. Please try again later.' });
+    }
+    return next();
+  };
+}
+
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'http://localhost:3001',
+  'https://localhost',
+  'capacitor://localhost',
+  ...String(process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+]);
+
+function applySecurityHeaders(req, res, next) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; "
+    + "img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+    + "connect-src 'self' https:; font-src 'self' data:; manifest-src 'self'",
+  );
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  return next();
+}
+
+function applyCors(req, res, next) {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Max-Age', '600');
+    res.setHeader('Vary', 'Origin');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  return next();
+}
+
+function enforceBodySize(req, res, next) {
+  const contentLength = Number(req.headers['content-length'] || 0);
+  const largeUploadAllowed = (req.method === 'POST' && req.path === '/api/chat/messages')
+    || (['POST', 'PUT', 'PATCH'].includes(req.method) && req.path.startsWith('/api/admin/products'));
+  const limit = largeUploadAllowed ? 8 * 1024 * 1024 : 512 * 1024;
+  if (contentLength > limit) {
+    return res.status(413).json({ message: 'Request body is too large.' });
+  }
+  return next();
+}
+
 export function createApp() {
   const app = express();
+  const trustedProxyHops = Number(process.env.TRUST_PROXY || 0);
 
   app.disable('x-powered-by');
-  app.set('trust proxy', true);
-  app.use('/api/paystack/webhook', express.raw({ type: 'application/json' }));
+  app.set('trust proxy', Number.isInteger(trustedProxyHops) && trustedProxyHops > 0 ? trustedProxyHops : false);
+
+  const globalLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 600 });
+  const authLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    message: 'Too many sign-in attempts. Please wait a few minutes and try again.',
+  });
+  const paymentLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 20 });
+  const writeLimiter = createRateLimiter({ windowMs: 5 * 60 * 1000, max: 60 });
+
+  app.use(applySecurityHeaders);
+  app.use(applyCors);
+  app.use(enforceBodySize);
+  app.use(globalLimiter);
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+  app.use('/api/paystack/webhook', express.raw({ type: 'application/json', limit: '1mb' }));
   app.use(express.json({ limit: '8mb' }));
 
   app.get('/api/health', (_req, res) => {
@@ -332,9 +535,16 @@ export function createApp() {
     const category = String(req.body?.category || '').trim();
     const description = String(req.body?.description || '').trim();
     const price = Number(req.body?.price);
-    const image = String(req.body?.image || '').trim();
+    const submittedImage = String(req.body?.image || '').trim();
+    const image = submittedImage ? sanitizeImageSource(submittedImage) : '';
     if (!name || !category || !description || !Number.isFinite(price) || price <= 0) {
       return res.status(400).json({ message: 'Enter a name, category, description, and positive price.' });
+    }
+    if (name.length > 100 || category.length > 40 || description.length > 600 || price > 10_000_000) {
+      return res.status(400).json({ message: 'Product details are too long or the price is out of range.' });
+    }
+    if (submittedImage && !image) {
+      return res.status(400).json({ message: 'Enter a valid https image URL or upload a PNG, JPEG, or WebP image under 2 MB.' });
     }
     const product = {
       id: `product-${randomUUID()}`,
@@ -359,9 +569,17 @@ export function createApp() {
     const category = String(req.body?.category ?? product.category).trim();
     const description = String(req.body?.description ?? product.description).trim();
     const price = Number(req.body?.price ?? product.price);
-    const image = String(req.body?.image ?? product.image).trim();
+    const imageProvided = req.body?.image !== undefined;
+    const submittedImage = String(req.body?.image ?? product.image ?? '').trim();
+    const image = submittedImage ? sanitizeImageSource(submittedImage) : bakeryProducts[0].image;
     if (!name || !category || !description || !Number.isFinite(price) || price <= 0) {
       return res.status(400).json({ message: 'Enter a name, category, description, and positive price.' });
+    }
+    if (name.length > 100 || category.length > 40 || description.length > 600 || price > 10_000_000) {
+      return res.status(400).json({ message: 'Product details are too long or the price is out of range.' });
+    }
+    if ((imageProvided || submittedImage) && !image) {
+      return res.status(400).json({ message: 'Enter a valid https image URL or upload a PNG, JPEG, or WebP image under 2 MB.' });
     }
     Object.assign(product, { name, category, description, price, image });
     writeDataStore(store);
@@ -443,7 +661,7 @@ export function createApp() {
     return res.json({ conversations });
   });
 
-  app.post('/api/chat/messages', requireUser, (req, res) => {
+  app.post('/api/chat/messages', writeLimiter, requireUser, (req, res) => {
     const body = String(req.body?.body || '').trim();
     let attachment = null;
     if (req.body?.attachment !== undefined) {
@@ -503,7 +721,7 @@ export function createApp() {
     return res.status(201).json({ message });
   });
 
-  app.post('/api/reviews', requireUser, (req, res) => {
+  app.post('/api/reviews', writeLimiter, requireUser, (req, res) => {
     if (req.user.role === 'admin') {
       return res.status(403).json({ message: 'Administrator accounts cannot post customer reviews.' });
     }
@@ -621,8 +839,8 @@ export function createApp() {
     for (const training of store.trainings) {
       if (fees[training.id] === undefined) continue;
       const fee = Number(fees[training.id]);
-      if (!Number.isFinite(fee) || fee <= 0) {
-        return res.status(400).json({ message: `Enter a positive fee for ${training.title}.` });
+      if (!Number.isFinite(fee) || fee <= 0 || fee > 10_000_000) {
+        return res.status(400).json({ message: `Enter a valid fee for ${training.title}.` });
       }
       training.fee = fee;
     }
@@ -681,8 +899,8 @@ export function createApp() {
 
   app.put('/api/admin/admin-signup-code', requireUser, requireAdmin, (req, res) => {
     const code = String(req.body?.code || '').trim();
-    if (code.length < 4 || code.length > 64) {
-      return res.status(400).json({ message: 'Admin signup code must be between 4 and 64 characters.' });
+    if (code.length < 6 || code.length > 64) {
+      return res.status(400).json({ message: 'Admin signup code must be between 6 and 64 characters.' });
     }
     const store = readDataStore();
     store.adminSignupCodeHash = hashAdminSignupCode(code);
@@ -690,7 +908,7 @@ export function createApp() {
     return res.json({ ok: true });
   });
 
-  app.post('/api/payments/initialize', async (req, res) => {
+  app.post('/api/payments/initialize', paymentLimiter, async (req, res) => {
     const secretKey = process.env.PAYSTACK_SECRET_KEY;
 
     const { customer = {}, items = [], deliveryMethod = 'delivery', deliveryAddress = '' } = req.body || {};
@@ -701,14 +919,18 @@ export function createApp() {
     if (!customerName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail) || !customerPhone) {
       return res.status(400).json({ message: 'Enter a name, valid email address, and phone number.' });
     }
+    if (customerName.length > 120 || customerEmail.length > 254 || customerPhone.length > 30
+      || !/^[+()\d\s-]{7,30}$/.test(customerPhone)) {
+      return res.status(400).json({ message: 'Check your contact details and try again.' });
+    }
     if (!Array.isArray(items) || !items.length || items.length > 20) {
       return res.status(400).json({ message: 'Your cart is empty or contains too many products.' });
     }
     if (!['delivery', 'pickup'].includes(deliveryMethod)) {
       return res.status(400).json({ message: 'Choose delivery or shop pickup.' });
     }
-    if (deliveryMethod === 'delivery' && !address) {
-      return res.status(400).json({ message: 'A delivery address is required.' });
+    if (deliveryMethod === 'delivery' && (!address || address.length > 500)) {
+      return res.status(400).json({ message: 'A delivery address of up to 500 characters is required.' });
     }
 
     const store = readDataStore();
@@ -731,6 +953,9 @@ export function createApp() {
     const subtotal = pricedItems.reduce((sum, item) => sum + item.total, 0);
     const deliveryFee = deliveryMethod === 'delivery' ? Number(store.paymentDetails.deliveryFee) || 0 : 0;
     const total = subtotal + deliveryFee;
+    if (!Number.isFinite(total) || total <= 0 || total > 20_000_000) {
+      return res.status(400).json({ message: 'The order total is out of range. Please review your cart.' });
+    }
     const reference = `ASH-${Date.now()}-${randomUUID()}`;
     const order = {
       id: `ORD-${randomUUID()}`,
@@ -767,6 +992,10 @@ export function createApp() {
       });
     }
 
+    const publicAppUrl = String(process.env.PUBLIC_APP_URL || '').replace(/\/$/, '');
+    const callbackUrl = process.env.PAYSTACK_CALLBACK_URL
+      || (publicAppUrl ? `${publicAppUrl}/payment/callback` : `${req.protocol}://${req.get('host')}/payment/callback`);
+
     try {
       const providerResponse = await fetch('https://api.paystack.co/transaction/initialize', {
         method: 'POST',
@@ -776,7 +1005,7 @@ export function createApp() {
           amount: Math.round(total * 100),
           currency: 'NGN',
           reference,
-          callback_url: process.env.PAYSTACK_CALLBACK_URL || `${req.protocol}://${req.get('host')}/payment/callback`,
+          callback_url: callbackUrl,
           metadata: {
             order_id: order.id,
             customer_name: customerName,
@@ -799,7 +1028,7 @@ export function createApp() {
     }
   });
 
-  app.get('/api/payments/verify', async (req, res) => {
+  app.get('/api/payments/verify', paymentLimiter, async (req, res) => {
     const secretKey = process.env.PAYSTACK_SECRET_KEY;
     if (!secretKey) return res.status(503).json({ message: 'Online payment is not configured yet.' });
     const reference = String(req.query.reference || '').trim();
@@ -897,8 +1126,9 @@ export function createApp() {
     const normalizedName = String(name).trim();
     const normalizedEmail = String(email).trim().toLowerCase();
     const normalizedPassword = String(password).trim();
-    if (!normalizedName || !normalizedEmail || normalizedPassword.length < 8) {
-      return res.status(400).json({ message: 'Enter a name, valid email, and password of at least 8 characters.' });
+    if (!normalizedName || !normalizedEmail || normalizedPassword.length < 8 || normalizedPassword.length > 200
+      || normalizedName.length > 120 || normalizedEmail.length > 254) {
+      return res.status(400).json({ message: 'Enter a name, valid email, and password between 8 and 200 characters.' });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json({ message: 'Enter a valid email address.' });
@@ -933,7 +1163,7 @@ export function createApp() {
     return res.json({ token, user: toPublicUser(user) });
   });
 
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', authLimiter, (req, res) => {
     const { email = '', password = '' } = req.body || {};
     const normalizedEmail = String(email).trim().toLowerCase();
     const providedPassword = String(password);
@@ -941,13 +1171,20 @@ export function createApp() {
     if (!normalizedEmail || !providedPassword.trim()) {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
+    if (normalizedEmail.length > 254 || providedPassword.length > 200) {
+      return res.status(400).json({ message: 'Invalid credentials.' });
+    }
 
     const store = readDataStore();
-    let user = store.users.find((entry) => entry.email.toLowerCase() === normalizedEmail && verifyPassword(providedPassword, entry.password));
+    let user = store.users.find((entry) => (
+      entry.email.toLowerCase() === normalizedEmail
+      && (allowDefaultAdmin || entry.email.toLowerCase() !== defaultAdminCredentials.email)
+      && verifyPassword(providedPassword, entry.password)
+    ));
 
     const adminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
     const adminPassword = String(process.env.ADMIN_PASSWORD || '');
-    if (adminEmail && adminPassword && normalizedEmail === adminEmail && providedPassword === adminPassword) {
+    if (adminEmail && adminPassword && normalizedEmail === adminEmail && timingSafeEqualStrings(providedPassword, adminPassword)) {
       user = store.users.find((entry) => entry.email.toLowerCase() === adminEmail);
       if (!user) {
         user = {
@@ -960,12 +1197,13 @@ export function createApp() {
         store.users.push(user);
       } else {
         user.role = 'admin';
-        user.password = hashPassword(adminPassword);
+        if (!verifyPassword(providedPassword, user.password)) user.password = hashPassword(adminPassword);
       }
-      writeDataStore(store);
     }
 
-    if (!user && normalizedEmail === defaultAdminCredentials.email && providedPassword === defaultAdminCredentials.password) {
+    if (!user && allowDefaultAdmin
+      && normalizedEmail === defaultAdminCredentials.email
+      && timingSafeEqualStrings(providedPassword, defaultAdminCredentials.password)) {
       user = store.users.find((entry) => entry.email.toLowerCase() === defaultAdminCredentials.email) || {
         id: `admin-${randomUUID()}`,
         name: defaultAdminCredentials.name,
@@ -981,17 +1219,20 @@ export function createApp() {
         existingUser.password = hashPassword(defaultAdminCredentials.password);
         user = existingUser;
       }
-      writeDataStore(store);
     }
 
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials.' });
     }
 
-    return res.json({ token: createToken(user), user: toPublicUser(user) });
+    if (passwordNeedsUpgrade(user.password)) {
+      user.password = hashPassword(providedPassword);
+    }
+
+    return res.json({ token: createToken(user, store), user: toPublicUser(user) });
   });
 
-  app.post('/api/auth/signup', (req, res) => {
+  app.post('/api/auth/signup', authLimiter, (req, res) => {
     const { name = '', email = '', password = '', accountType = 'customer', adminCode = '' } = req.body || {};
     const normalizedName = String(name).trim();
     const normalizedEmail = String(email).trim().toLowerCase();
@@ -1000,8 +1241,14 @@ export function createApp() {
     if (!normalizedName || !normalizedEmail || !normalizedPassword) {
       return res.status(400).json({ message: 'Name, email, and password are required.' });
     }
-    if (normalizedPassword.length < 8) {
-      return res.status(400).json({ message: 'Password must be at least 8 characters.' });
+    if (normalizedName.length > 120) {
+      return res.status(400).json({ message: 'Name must be 120 characters or fewer.' });
+    }
+    if (normalizedEmail.length > 254) {
+      return res.status(400).json({ message: 'Enter a valid email address.' });
+    }
+    if (normalizedPassword.length < 8 || normalizedPassword.length > 200) {
+      return res.status(400).json({ message: 'Password must be between 8 and 200 characters.' });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json({ message: 'Enter a valid email address.' });
@@ -1011,8 +1258,13 @@ export function createApp() {
     }
 
     const store = readDataStore();
-    if (accountType === 'admin' && !isValidAdminSignupCode(String(adminCode).trim(), store.adminSignupCodeHash)) {
-      return res.status(403).json({ message: 'The admin signup code is incorrect.' });
+    if (accountType === 'admin') {
+      if (!store.adminSignupCodeHash) {
+        return res.status(403).json({ message: 'Administrator registration is disabled. Ask an existing administrator to create your account.' });
+      }
+      if (!isValidAdminSignupCode(String(adminCode).trim(), store.adminSignupCodeHash)) {
+        return res.status(403).json({ message: 'The admin signup code is incorrect.' });
+      }
     }
     const existingUser = store.users.find((user) => user.email.toLowerCase() === normalizedEmail);
 
@@ -1030,13 +1282,11 @@ export function createApp() {
     };
 
     store.users.push(user);
-    writeDataStore(store);
-
-    return res.json({ token: createToken(user), user: toPublicUser(user) });
+    return res.json({ token: createToken(user, store), user: toPublicUser(user) });
   });
 
   app.post('/api/auth/logout', requireUser, (req, res) => {
-    sessions.delete(req.token);
+    deleteSession(req.token);
     res.json({ ok: true, message: 'Signed out successfully.' });
   });
 
@@ -1076,10 +1326,13 @@ export function createApp() {
     res.json({ projects });
   });
 
-  app.post('/api/projects', (req, res) => {
+  app.post('/api/projects', requireUser, (req, res) => {
     const { name = '', description = '' } = req.body || {};
     if (!String(name).trim()) {
       return res.status(400).json({ message: 'Project name is required.' });
+    }
+    if (String(name).trim().length > 120 || String(description).trim().length > 1000) {
+      return res.status(400).json({ message: 'Project details are too long.' });
     }
 
     const store = readDataStore();
@@ -1087,7 +1340,7 @@ export function createApp() {
       id: `project-${Date.now()}`,
       name: String(name).trim(),
       description: String(description).trim(),
-      owner: 'demo-user',
+      owner: req.user.id,
       status: 'New',
       progress: 25,
       due: 'This week',
@@ -1100,9 +1353,19 @@ export function createApp() {
   });
 
   if (fs.existsSync(distPath)) {
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }));
 
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {

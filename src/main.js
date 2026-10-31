@@ -1,4 +1,25 @@
 ﻿import './style.css';
+import '@fontsource/manrope/latin-400.css';
+import '@fontsource/manrope/latin-500.css';
+import '@fontsource/manrope/latin-600.css';
+import '@fontsource/manrope/latin-700.css';
+import '@fontsource/manrope/latin-800.css';
+import '@fontsource/playfair-display/latin-600.css';
+import '@fontsource/playfair-display/latin-700.css';
+import '@fontsource/playfair-display/latin-800.css';
+import { apiFetch, readJson } from './api.js';
+import { clearAuthToken, getAuthToken, loadAuthToken, setAuthToken } from './auth-storage.js';
+import {
+  closeInAppBrowser,
+  copyText,
+  hideSplashScreen,
+  initializeNativeApp,
+  isNativePlatform,
+  openPaymentUrl,
+  parsePaymentReference,
+  shareContent,
+  tapFeedback,
+} from './native.js';
 
 const app = document.querySelector('#app');
 
@@ -23,11 +44,15 @@ const defaultProducts = [
   { id: 'birthday-bundle', name: 'Birthday Celebration Pack', category: 'cakes', price: 26000, image: 'https://images.unsplash.com/photo-1535141192574-5d4897c12636?auto=format&fit=crop&w=900&q=80', description: 'Festive celebration cake with custom finishing.' },
 ];
 
+const FALLBACK_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1517433670267-08bbd4be890f?auto=format&fit=crop&w=900&q=80';
+
 const defaultTrainings = [
   { id: 'cake-basic', title: 'Cake Making Fundamentals', duration: '2 Weeks', fee: 35000, seats: 18, date: '2026-10-12', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Cake mixing', 'Batter science', 'Basic decoration'] },
   { id: 'decor-masterclass', title: 'Advanced Decoration Masterclass', duration: '3 Weeks', fee: 48000, seats: 12, date: '2026-10-20', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Buttercream art', 'Fondant detailing', 'Event styling'] },
   { id: 'snack-production', title: 'Snacks & Pastry Production', duration: '4 Weeks', fee: 55000, seats: 10, date: '2026-11-02', location: 'Hotoro Behind Chula Fueling Station', status: 'Open', topics: ['Small chops production', 'Pastry folding', 'Packaging'] },
 ];
+
+if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual';
 
 const state = {
   page: 'home',
@@ -61,6 +86,9 @@ const state = {
   chatRefreshTimer: null,
   chatRefreshing: false,
   cart: readStorage('ashmie_cart', []),
+  isOnline: true,
+  appActive: true,
+  pendingPaymentReference: readStorage('ashmie_pending_payment_reference', ''),
 };
 
 function readStorage(key, fallback) {
@@ -137,9 +165,17 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function safeImageSrc(value, fallback = '') {
+  const url = String(value || '').trim();
+  const allowed = /^https:\/\//i.test(url)
+    || /^data:image\/(?:png|jpe?g|webp);base64,/i.test(url)
+    || url.startsWith('/');
+  return escapeHtml(allowed ? url : fallback);
+}
+
 async function fetchJson(url, fallback) {
   try {
-    const response = await fetch(url);
+    const response = await apiFetch(url);
     if (!response.ok) throw new Error(`Request failed: ${url}`);
     return await response.json();
   } catch (error) {
@@ -149,18 +185,23 @@ async function fetchJson(url, fallback) {
 }
 
 async function loadStorefront() {
-  const siteData = await fetchJson('/api/site', {
-    site: defaultSite,
-    categories: [
+  const cached = readStorage('ashmie_storefront_cache', null);
+  const cachedSite = cached?.site || {};
+  const siteFallback = {
+    site: { ...defaultSite, ...cachedSite },
+    categories: cached?.categories || [
       { id: 'cakes', name: 'Cakes', image: 'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&w=900&q=80' },
       { id: 'cupcakes', name: 'Cupcakes', image: 'https://images.unsplash.com/photo-1486427944299-d1955d23e34d?auto=format&fit=crop&w=900&q=80' },
       { id: 'pastries', name: 'Pastries', image: 'https://images.unsplash.com/photo-1509440159596-0249088772ff?auto=format&fit=crop&w=900&q=80' },
     ],
-    products: defaultProducts,
-    trainings: defaultTrainings,
-  });
+    products: cached?.products || defaultProducts,
+    trainings: cached?.trainings || defaultTrainings,
+    trainingPortalOpen: cached?.trainingPortalOpen !== false,
+  };
+  const paymentFallback = { paymentDetails: { ...state.paymentDetails, ...(cached?.paymentDetails || {}) } };
 
-  const paymentData = await fetchJson('/api/payment-details', { paymentDetails: state.paymentDetails });
+  const siteData = await fetchJson('/api/site', siteFallback);
+  const paymentData = await fetchJson('/api/payment-details', paymentFallback);
   const reviewsData = await fetchJson('/api/reviews', { reviews: [] });
 
   state.site = { ...defaultSite, ...(siteData.site || {}) };
@@ -170,6 +211,17 @@ async function loadStorefront() {
   state.trainingPortalOpen = siteData.trainingPortalOpen !== false;
   state.paymentDetails = { ...state.paymentDetails, ...(paymentData.paymentDetails || {}) };
   state.reviews = reviewsData.reviews || [];
+
+  if (siteData !== siteFallback || paymentData !== paymentFallback) {
+    writeStorage('ashmie_storefront_cache', {
+      site: state.site,
+      categories: state.categories,
+      products: state.products,
+      trainings: state.trainings,
+      trainingPortalOpen: state.trainingPortalOpen,
+      paymentDetails: state.paymentDetails,
+    });
+  }
 
   const savedOrders = readStorage('ashmie_orders', []);
   if (savedOrders.length) state.orders = savedOrders;
@@ -217,11 +269,11 @@ async function submitProductReview(event) {
   if (!state.user) return;
   const form = event.currentTarget;
   const formData = new FormData(form);
-  const response = await fetch('/api/reviews', {
+  const response = await apiFetch('/api/reviews', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify({
       productId: form.dataset.productId,
@@ -289,6 +341,7 @@ function addToCart(productId) {
   }
 
   saveCart();
+  tapFeedback();
   state.page = 'cart';
   renderApp();
   showNotification(`${product.name} added to your cart.`);
@@ -338,7 +391,7 @@ async function placeOrder(event) {
   submitButton.disabled = true;
   submitButton.textContent = 'Preparing payment...';
   try {
-    const response = await fetch('/api/payments/initialize', {
+    const response = await apiFetch('/api/payments/initialize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -359,7 +412,12 @@ async function placeOrder(event) {
       renderApp();
       return;
     }
-    window.location.assign(data.authorizationUrl);
+
+    setPendingPaymentReference(data.reference || '');
+    await openPaymentUrl(data.authorizationUrl);
+    if (isNativePlatform) {
+      showNotification('Complete the payment in the browser, then return to Ashmie.');
+    }
   } catch (error) {
     showNotification(error.message || 'Unable to start payment. Please try again.', 'error');
     submitButton.disabled = false;
@@ -367,29 +425,73 @@ async function placeOrder(event) {
   }
 }
 
+function setPendingPaymentReference(reference) {
+  state.pendingPaymentReference = reference || '';
+  if (state.pendingPaymentReference) writeStorage('ashmie_pending_payment_reference', state.pendingPaymentReference);
+  else localStorage.removeItem('ashmie_pending_payment_reference');
+}
+
+let pendingPaymentCheckedAt = 0;
+
+async function verifyPaymentReference(reference, { showResult = true } = {}) {
+  let status = 'pending';
+  try {
+    const response = await apiFetch(`/api/payments/verify?reference=${encodeURIComponent(reference)}`);
+    const data = await readJson(response);
+    if (!response.ok) throw new Error(data.message || 'Payment verification failed.');
+    state.paymentResult = data;
+    status = data.paymentStatus || 'pending';
+    if (data.paymentStatus === 'success') {
+      state.cart = [];
+      saveCart();
+      state.pendingManualOrder = null;
+      localStorage.removeItem('ashmie_pending_manual_order');
+      setPendingPaymentReference('');
+      tapFeedback();
+    } else if (data.paymentStatus === 'failed') {
+      setPendingPaymentReference('');
+    }
+  } catch (error) {
+    status = state.isOnline ? 'failed' : 'pending';
+    state.paymentResult = { paymentStatus: 'failed', message: error.message };
+  }
+  if (showResult) state.page = 'payment-result';
+  return status;
+}
+
 async function verifyPaystackCallback() {
+  if (isNativePlatform) return;
   if (window.location.pathname !== '/payment/callback') return;
 
-  const reference = new URLSearchParams(window.location.search).get('reference');
+  const reference = new URLSearchParams(window.location.search).get('reference')
+    || new URLSearchParams(window.location.search).get('trxref')
+    || state.pendingPaymentReference;
   if (!reference) {
     state.paymentResult = { paymentStatus: 'failed', message: 'No payment reference was returned.' };
     state.page = 'payment-result';
     return;
   }
+  await verifyPaymentReference(reference);
+}
 
-  try {
-    const response = await fetch(`/api/payments/verify?reference=${encodeURIComponent(reference)}`);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message || 'Payment verification failed.');
-    state.paymentResult = data;
-    if (data.paymentStatus === 'success') {
-      state.cart = [];
-      saveCart();
-    }
-  } catch (error) {
-    state.paymentResult = { paymentStatus: 'failed', message: error.message };
+async function handleNativePaymentReturn(url) {
+  const reference = parsePaymentReference(url) || state.pendingPaymentReference;
+  if (!reference) return;
+  await closeInAppBrowser();
+  pendingPaymentCheckedAt = Date.now();
+  await verifyPaymentReference(reference);
+  renderApp();
+}
+
+async function checkPendingPayment() {
+  if (!state.pendingPaymentReference) return;
+  if (Date.now() - pendingPaymentCheckedAt < 15000) return;
+  pendingPaymentCheckedAt = Date.now();
+  const status = await verifyPaymentReference(state.pendingPaymentReference, { showResult: false });
+  if (status === 'success' || (status === 'failed' && state.isOnline)) {
+    state.page = 'payment-result';
+    renderApp();
   }
-  state.page = 'payment-result';
 }
 
 function getPostAuthenticationPage() {
@@ -405,7 +507,7 @@ async function loginWithCredentials(email, password) {
   const normalizedPassword = String(password || '').trim();
 
   try {
-    const response = await fetch('/api/auth/login', {
+    const response = await apiFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: normalizedEmail, password: normalizedPassword }),
@@ -414,7 +516,8 @@ async function loginWithCredentials(email, password) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || 'Unable to sign in.');
     state.user = data.user;
-    writeStorage('ashmie_auth_token', data.token);
+    await setAuthToken(data.token);
+    tapFeedback();
     state.page = getPostAuthenticationPage();
     state.authMessage = '';
     if (state.user.role === 'admin') await loadAdminOverview();
@@ -430,8 +533,8 @@ async function loginWithCredentials(email, password) {
 }
 
 async function loadAdminOverview() {
-  const response = await fetch('/api/admin/overview', {
-    headers: { Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}` },
+  const response = await apiFetch('/api/admin/overview', {
+    headers: { Authorization: `Bearer ${getAuthToken()}` },
   });
   if (response.ok) {
     state.adminOverview = await response.json();
@@ -443,8 +546,8 @@ async function loadAdminOverview() {
 
 async function loadTrainingEnrollments() {
   if (!state.user || state.user.role === 'admin') return;
-  const response = await fetch('/api/training/enrollments', {
-    headers: { Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}` },
+  const response = await apiFetch('/api/training/enrollments', {
+    headers: { Authorization: `Bearer ${getAuthToken()}` },
   });
   if (response.ok) {
     const data = await response.json();
@@ -461,17 +564,17 @@ function handleExpiredChatSession() {
   state.authMessage = 'Your session expired. Sign in again to continue to your inbox.';
   state.accountMode = 'login';
   state.page = 'account';
-  localStorage.removeItem('ashmie_auth_token');
+  clearAuthToken();
 }
 
 async function refreshChatData({ render = false } = {}) {
   if (state.chatRefreshing || !state.user || !['chat', 'admin-chat'].includes(state.page)) return;
   if ((state.page === 'admin-chat') !== (state.user.role === 'admin')) return;
   state.chatRefreshing = true;
-  const token = readStorage('ashmie_auth_token', '');
+  const token = getAuthToken();
   try {
     if (state.page === 'admin-chat') {
-      const inboxResponse = await fetch('/api/admin/chat/conversations', {
+      const inboxResponse = await apiFetch('/api/admin/chat/conversations', {
         headers: { Authorization: `Bearer ${token}` },
       });
       const inboxData = await inboxResponse.json();
@@ -486,7 +589,7 @@ async function refreshChatData({ render = false } = {}) {
       }
 
       if (state.selectedChatId) {
-        const messagesResponse = await fetch(`/api/chat/messages?conversationId=${encodeURIComponent(state.selectedChatId)}`, {
+        const messagesResponse = await apiFetch(`/api/chat/messages?conversationId=${encodeURIComponent(state.selectedChatId)}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const messagesData = await messagesResponse.json();
@@ -502,7 +605,7 @@ async function refreshChatData({ render = false } = {}) {
         state.chatMessages = [];
       }
     } else {
-      const response = await fetch('/api/chat/messages', { headers: { Authorization: `Bearer ${token}` } });
+      const response = await apiFetch('/api/chat/messages', { headers: { Authorization: `Bearer ${token}` } });
       const data = await response.json();
       if (!response.ok) {
         const error = new Error(data.message || 'Unable to load your support chat.');
@@ -590,11 +693,11 @@ async function sendChatMessage(event) {
   submitButton.disabled = true;
   try {
     if (file) payload.attachment = { name: file.name, mimeType: file.type, dataUrl: await readSelectedFile(file) };
-    const response = await fetch('/api/chat/messages', {
+    const response = await apiFetch('/api/chat/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+        Authorization: `Bearer ${getAuthToken()}`,
       },
       body: JSON.stringify(payload),
     });
@@ -630,24 +733,27 @@ async function navigateToPage(page) {
     await refreshChatData();
   }
   renderApp();
+  window.scrollTo({ top: 0, behavior: 'auto' });
 }
 
 function configureChatPolling() {
   if (state.chatRefreshTimer) clearInterval(state.chatRefreshTimer);
   state.chatRefreshTimer = null;
-  if ((state.page === 'chat' && state.user && state.user.role !== 'admin') || (state.page === 'admin-chat' && state.user?.role === 'admin')) {
+  const onChatPage = (state.page === 'chat' && state.user && state.user.role !== 'admin')
+    || (state.page === 'admin-chat' && state.user?.role === 'admin');
+  if (onChatPage && state.appActive && state.isOnline) {
     state.chatRefreshTimer = setInterval(() => refreshChatData(), 5000);
   }
 }
 
 async function logout() {
-  const token = readStorage('ashmie_auth_token', '');
+  const token = getAuthToken();
   if (token) {
-    await fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+    await apiFetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
   }
   state.user = null;
   state.authReturnPage = null;
-  localStorage.removeItem('ashmie_auth_token');
+  await clearAuthToken();
   state.page = 'home';
   renderApp();
 }
@@ -658,7 +764,7 @@ async function registerAccount(name, email, password, accountType, adminCode) {
   const normalizedPassword = String(password || '').trim();
 
   try {
-    const response = await fetch('/api/auth/signup', {
+    const response = await apiFetch('/api/auth/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: normalizedName, email: normalizedEmail, password: normalizedPassword, accountType, adminCode }),
@@ -667,7 +773,8 @@ async function registerAccount(name, email, password, accountType, adminCode) {
     if (!response.ok) throw new Error(data.message || 'Could not create account.');
 
     state.user = data.user;
-    writeStorage('ashmie_auth_token', data.token);
+    await setAuthToken(data.token);
+    tapFeedback();
     state.authMessage = '';
     state.page = getPostAuthenticationPage();
     if (state.user.role === 'admin') await loadAdminOverview();
@@ -684,11 +791,11 @@ async function savePaymentDetails(event) {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
   const paymentDetails = Object.fromEntries(formData.entries());
-  const response = await fetch('/api/admin/payment-details', {
+  const response = await apiFetch('/api/admin/payment-details', {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify(paymentDetails),
   });
@@ -705,11 +812,11 @@ async function savePaymentDetails(event) {
 async function createAdminAccount(event) {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
-  const response = await fetch('/api/admin/admins', {
+  const response = await apiFetch('/api/admin/admins', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify(Object.fromEntries(formData.entries())),
   });
@@ -733,11 +840,11 @@ async function updateAdminSignupCode(event) {
     return;
   }
 
-  const response = await fetch('/api/admin/admin-signup-code', {
+  const response = await apiFetch('/api/admin/admin-signup-code', {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify({ code }),
   });
@@ -754,11 +861,11 @@ async function updateOrderStatus(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const formData = new FormData(form);
-  const response = await fetch(`/api/admin/orders/${encodeURIComponent(form.dataset.orderId)}/status`, {
+  const response = await apiFetch(`/api/admin/orders/${encodeURIComponent(form.dataset.orderId)}/status`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify({ status: formData.get('status') }),
   });
@@ -778,11 +885,11 @@ async function enrollTraining(courseId) {
     renderApp();
     return;
   }
-  const response = await fetch('/api/training/enroll', {
+  const response = await apiFetch('/api/training/enroll', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify({ trainingId: courseId }),
   });
@@ -813,11 +920,11 @@ async function addProductFromForm(event) {
   }
 
   delete values.imageFile;
-  const response = await fetch('/api/admin/products', {
+  const response = await apiFetch('/api/admin/products', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify(values),
   });
@@ -849,11 +956,11 @@ async function updateProduct(event) {
   }
 
   delete values.imageFile;
-  const response = await fetch(`/api/admin/products/${encodeURIComponent(form.dataset.productId)}`, {
+  const response = await apiFetch(`/api/admin/products/${encodeURIComponent(form.dataset.productId)}`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify(values),
   });
@@ -870,9 +977,9 @@ async function updateProduct(event) {
 async function deleteProduct(button) {
   const productName = button.dataset.productName;
   if (!window.confirm(`Remove ${productName} from the shop?`)) return;
-  const response = await fetch(`/api/admin/products/${encodeURIComponent(button.dataset.productId)}`, {
+  const response = await apiFetch(`/api/admin/products/${encodeURIComponent(button.dataset.productId)}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}` },
+    headers: { Authorization: `Bearer ${getAuthToken()}` },
   });
   const data = await response.json();
   if (!response.ok) {
@@ -898,11 +1005,11 @@ async function persistTrainingSettings(form) {
     date: formData.get(`date-${training.id}`),
     duration: formData.get(`duration-${training.id}`),
   }]));
-  const response = await fetch('/api/admin/training-settings', {
+  const response = await apiFetch('/api/admin/training-settings', {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${readStorage('ashmie_auth_token', '')}`,
+      Authorization: `Bearer ${getAuthToken()}`,
     },
     body: JSON.stringify({ isOpen: formData.get('isOpen') === 'true', fees, courseDetails }),
   });
@@ -924,30 +1031,30 @@ function renderHomeSection() {
   const featureProduct = featured[0];
   const cards = featured.map((product) => `
     <article class="product-card">
-      <img src="${product.image}" alt="${product.name}" />
+      <img src="${safeImageSrc(product.image, FALLBACK_PRODUCT_IMAGE)}" alt="${escapeHtml(product.name)}" loading="lazy" />
       <div class="product-meta">
-        <span>${product.category}</span>
+        <span>${escapeHtml(product.category)}</span>
         <span class="product-price">${formatCurrency(product.price)}</span>
       </div>
-      <h3>${product.name}</h3>
-      <p>${product.description}</p>
-      <button type="button" class="primary add-to-cart" data-product-id="${product.id}">Add to cart</button>
+      <h3>${escapeHtml(product.name)}</h3>
+      <p>${escapeHtml(product.description)}</p>
+      <button type="button" class="primary add-to-cart" data-product-id="${escapeHtml(product.id)}">Add to cart</button>
       ${renderProductReviews(product)}
     </article>
   `).join('');
 
   const categoryCards = (state.categories || []).slice(0, 3).map((category) => `
     <article class="gallery-card">
-      <img src="${category.image || 'https://images.unsplash.com/photo-1517433670267-08bbd4be890f?auto=format&fit=crop&w=900&q=80'}" alt="${category.name}" />
-      <h3>${category.name}</h3>
+      <img src="${safeImageSrc(category.image, FALLBACK_PRODUCT_IMAGE)}" alt="${escapeHtml(category.name)}" loading="lazy" />
+      <h3>${escapeHtml(category.name)}</h3>
     </article>
   `).join('');
 
   const trainingCards = state.trainingPortalOpen ? state.trainings.slice(0, 3).map((course) => `
     <article class="training-card">
-      <h3>${course.title}</h3>
+      <h3>${escapeHtml(course.title)}</h3>
       <div class="training-meta"><span>${escapeHtml(course.duration)}</span><span class="training-fee">${formatCurrency(course.fee)}</span></div>
-      <p>${course.topics.join(' • ')}</p>
+      <p>${escapeHtml((course.topics || []).join(' • '))}</p>
       <button type="button" class="secondary" data-page="student">View Training</button>
     </article>
   `).join('') : '<p class="empty-state">Training registration is currently closed.</p>';
@@ -967,8 +1074,8 @@ function renderHomeSection() {
     <section class="hero">
       <div class="hero-copy">
         <span class="eyebrow">Freshly baked for every occasion</span>
-        <h1>${state.site.tagline}</h1>
-        <p>${state.site.description}</p>
+        <h1>${escapeHtml(state.site.tagline)}</h1>
+        <p>${escapeHtml(state.site.description)}</p>
         <div class="actions">
           <button type="button" class="primary" data-page="shop">Shop now</button>
           <button type="button" class="secondary" data-page="student">Training</button>
@@ -987,11 +1094,11 @@ function renderHomeSection() {
             <div class="metric-row">
               <div>
                 <small>Featured product</small>
-                <strong>${featureProduct?.name || 'Explore our bakery collection'}</strong>
+                <strong>${escapeHtml(featureProduct?.name || 'Explore our bakery collection')}</strong>
               </div>
               <span class="badge success">Fresh</span>
             </div>
-            ${featureProduct ? `<img src="${featureProduct.image}" alt="${featureProduct.name}" style="border-radius:18px; height:220px; object-fit:cover; margin-bottom:18px;" />` : ''}
+            ${featureProduct ? `<img src="${safeImageSrc(featureProduct.image, FALLBACK_PRODUCT_IMAGE)}" alt="${escapeHtml(featureProduct.name)}" style="border-radius:18px; height:220px; object-fit:cover; margin-bottom:18px;" />` : ''}
             <div class="panel-footer">
               <div>
                 <small>Price</small>
@@ -1045,14 +1152,14 @@ function renderHomeSection() {
 function renderShopSection() {
   const cards = state.products.map((product) => `
     <article class="product-card">
-      <img src="${product.image}" alt="${product.name}" />
+      <img src="${safeImageSrc(product.image, FALLBACK_PRODUCT_IMAGE)}" alt="${escapeHtml(product.name)}" loading="lazy" />
       <div class="product-meta">
-        <span>${product.category}</span>
+        <span>${escapeHtml(product.category)}</span>
         <span class="product-price">${formatCurrency(product.price)}</span>
       </div>
-      <h3>${product.name}</h3>
-      <p>${product.description}</p>
-      <button type="button" class="primary add-to-cart" data-product-id="${product.id}">Add to cart</button>
+      <h3>${escapeHtml(product.name)}</h3>
+      <p>${escapeHtml(product.description)}</p>
+      <button type="button" class="primary add-to-cart" data-product-id="${escapeHtml(product.id)}">Add to cart</button>
       ${renderProductReviews(product)}
     </article>
   `).join('');
@@ -1072,18 +1179,18 @@ function renderStudentPortal() {
   const enrollments = state.trainingEnrollments;
   const studentEnrollments = state.user ? enrollments.filter((item) => item.email === state.user.email) : [];
   const studentCourses = state.trainings.map((course) => {
-    const isBooked = enrollments.some((item) => item.courseId === course.id && item.email === state.user?.email);
+    const isBooked = enrollments.some((item) => item.trainingId === course.id && item.userId === state.user?.id);
     return `
       <article class="training-card">
-        <h3>${course.title}</h3>
+        <h3>${escapeHtml(course.title)}</h3>
         <div class="training-meta"><span>${escapeHtml(course.duration)}</span><span class="training-fee">${formatCurrency(course.fee)}</span></div>
-        <p>${course.topics.join(' • ')}</p>
+        <p>${escapeHtml((course.topics || []).join(' • '))}</p>
         <ul class="training-list">
           <li>Start: ${escapeHtml(formatTrainingDate(course.date))}</li>
           <li>Location: ${escapeHtml(course.location)}</li>
-          <li>Seats left: ${course.seats}</li>
+          <li>Seats left: ${escapeHtml(course.seats)}</li>
         </ul>
-        ${state.trainingPortalOpen ? `<button type="button" class="${isBooked ? 'secondary' : 'primary'} enroll-course" data-course-id="${course.id}" ${isBooked ? 'disabled' : ''}>${isBooked ? 'Booked' : 'Register'}</button>` : '<p class="muted">Registration is closed.</p>'}
+        ${state.trainingPortalOpen ? `<button type="button" class="${isBooked ? 'secondary' : 'primary'} enroll-course" data-course-id="${escapeHtml(course.id)}" ${isBooked ? 'disabled' : ''}>${isBooked ? 'Booked' : 'Register'}</button>` : '<p class="muted">Registration is closed.</p>'}
       </article>
     `;
   }).join('');
@@ -1107,7 +1214,7 @@ function renderStudentPortal() {
     <section class="feature-section">
       <div class="section-heading">
         <span class="eyebrow">Training</span>
-        <h2>Welcome back, ${state.user.name}</h2>
+        <h2>Welcome back, ${escapeHtml(state.user.name)}</h2>
       </div>
 
       <div class="portal-grid">
@@ -1219,7 +1326,7 @@ function renderAdminPortal() {
   const productManagementMarkup = state.products.length ? state.products.map((product) => `
     <article class="admin-product-row">
       <div class="admin-product-header">
-        <img src="${product.image || 'https://images.unsplash.com/photo-1517433670267-08bbd4be890f?auto=format&fit=crop&w=900&q=80'}" alt="${escapeHtml(product.name)}" />
+        <img src="${safeImageSrc(product.image, FALLBACK_PRODUCT_IMAGE)}" alt="${escapeHtml(product.name)}" loading="lazy" />
         <strong>${escapeHtml(product.name)}</strong>
       </div>
       <form class="admin-product-edit-form" data-product-id="${escapeHtml(product.id)}">
@@ -1423,15 +1530,15 @@ function renderCartSection() {
       <div class="cart-card">
         <div class="cart-row">
           <div>
-            <h3>${item.name}</h3>
-            <p>${item.category}</p>
+            <h3>${escapeHtml(item.name)}</h3>
+            <p>${escapeHtml(item.category)}</p>
           </div>
           <strong>${formatCurrency(item.price * item.quantity)}</strong>
         </div>
         <div class="cart-toolbar">
-          <button type="button" class="secondary qty-btn" data-product-id="${item.id}" data-delta="-1">-</button>
-          <span class="qty-value">Qty: ${item.quantity}</span>
-          <button type="button" class="secondary qty-btn" data-product-id="${item.id}" data-delta="1">+</button>
+          <button type="button" class="secondary qty-btn" data-product-id="${escapeHtml(item.id)}" data-delta="-1" aria-label="Decrease quantity">-</button>
+          <span class="qty-value">Qty: ${escapeHtml(item.quantity)}</span>
+          <button type="button" class="secondary qty-btn" data-product-id="${escapeHtml(item.id)}" data-delta="1" aria-label="Increase quantity">+</button>
         </div>
       </div>
     `).join('')
@@ -1581,12 +1688,12 @@ function renderFooter() {
     <footer class="site-footer">
       <div class="footer-inner">
         <div class="footer-main">
-          <div class="footer-brand"><button type="button" class="brand-wrap" data-page="home"><img class="brand-logo" src="/ashmie-logo.jpeg" alt="" /><span>${state.site.name}</span></button><p>Thoughtful bakes, joyful celebrations and practical skills from ${escapeHtml(state.site.address)}.</p></div>
+          <div class="footer-brand"><button type="button" class="brand-wrap" data-page="home"><img class="brand-logo" src="/ashmie-logo.jpeg" alt="" /><span>${escapeHtml(state.site.name)}</span></button><p>Thoughtful bakes, joyful celebrations and practical skills from ${escapeHtml(state.site.address)}.</p></div>
           <div class="footer-column"><h3>Explore</h3><button type="button" data-page="shop">Shop collection</button><button type="button" data-page="student">Baking classes</button><button type="button" data-page="account">My account</button></div>
-          <div class="footer-column"><h3>Get in touch</h3><a href="tel:${state.site.phone}">${state.site.phone}</a><a href="mailto:${state.site.email}">${state.site.email}</a><span>${state.site.address}</span></div>
-          <div class="footer-cta"><span class="eyebrow">Made to be shared</span><p>Planning a celebration or looking to learn?</p><button type="button" class="secondary" data-page="shop">Find your favourite</button></div>
+          <div class="footer-column"><h3>Get in touch</h3><a href="tel:${escapeHtml(state.site.phone)}">${escapeHtml(state.site.phone)}</a><a href="mailto:${escapeHtml(state.site.email)}">${escapeHtml(state.site.email)}</a><span>${escapeHtml(state.site.address)}</span></div>
+          <div class="footer-cta"><span class="eyebrow">Made to be shared</span><p>Planning a celebration or looking to learn?</p><button type="button" class="secondary" data-page="shop">Find your favourite</button><button type="button" class="secondary share-app-button">Share Ashmie</button></div>
         </div>
-        <div class="footer-bottom"><span>© ${new Date().getFullYear()} ${state.site.name}. All rights reserved.</span><span>Baked with care at ${escapeHtml(state.site.address)}</span></div>
+        <div class="footer-bottom"><span>© ${new Date().getFullYear()} ${escapeHtml(state.site.name)}. All rights reserved.</span><span>Baked with care at ${escapeHtml(state.site.address)}</span></div>
       </div>
     </footer>
   `;
@@ -1608,12 +1715,18 @@ function renderApp() {
   };
 
   const isAdminUser = state.user?.role === 'admin';
+  const cartCount = getCartCount();
+
+  document.body.classList.toggle('is-admin', isAdminUser);
+  document.body.classList.toggle('is-offline', !state.isOnline);
+
   app.innerHTML = `
+    <div id="offline-banner" class="offline-banner" role="status" ${state.isOnline ? 'hidden' : ''}>You are offline. Reconnect to place orders or send messages.</div>
     <div class="page-shell">
       <header class="topbar ${isAdminUser ? 'admin-topbar' : ''}">
         <div class="brand-wrap">
           <img class="brand-logo" src="/ashmie-logo.jpeg" alt="" />
-          <span>${state.site.name}</span>
+          <span>${escapeHtml(state.site.name)}</span>
         </div>
         ${isAdminUser ? `
           <div class="admin-topbar-actions">
@@ -1628,15 +1741,28 @@ function renderApp() {
             <button type="button" class="nav-link ${state.page === 'shop' ? 'active' : ''}" data-page="shop">Shop</button>
             <button type="button" class="nav-link ${state.page === 'student' ? 'active' : ''}" data-page="student">Training</button>
             <button type="button" class="nav-link ${state.page === 'chat' ? 'active' : ''}" data-page="chat">Chat</button>
-            <button type="button" class="nav-link ${state.page === 'cart' ? 'active' : ''}" data-page="cart">Cart (${getCartCount()})</button>
-            ${state.user ? `<button type="button" id="logout-button" class="nav-button">Sign out</button>` : `<button type="button" class="nav-button" data-page="account">Sign in</button>`}
+            <button type="button" class="nav-link ${state.page === 'cart' ? 'active' : ''}" data-page="cart">Cart (${cartCount})</button>
           </nav>
+          <div class="account-actions">
+            ${state.user ? `<button type="button" id="logout-button" class="nav-button">Sign out</button>` : `<button type="button" class="nav-button" data-page="account">Sign in</button>`}
+          </div>
         `}
       </header>
 
-      <main>${pageContent[state.page] || renderHomeSection()}</main>
+      <main id="main-content">${pageContent[state.page] || renderHomeSection()}</main>
     </div>
     ${renderFooter()}
+    ${!isAdminUser ? `
+      <nav class="bottom-nav" aria-label="Primary">
+        <button type="button" class="bottom-nav-item ${state.page === 'home' ? 'active' : ''}" data-page="home">Home</button>
+        <button type="button" class="bottom-nav-item ${state.page === 'shop' ? 'active' : ''}" data-page="shop">Shop</button>
+        <button type="button" class="bottom-nav-item ${state.page === 'student' ? 'active' : ''}" data-page="student">Classes</button>
+        <button type="button" class="bottom-nav-item ${state.page === 'chat' ? 'active' : ''}" data-page="chat">Chat</button>
+        <button type="button" class="bottom-nav-item ${state.page === 'cart' ? 'active' : ''}" data-page="cart">
+          Cart${cartCount ? `<span class="bottom-nav-badge">${cartCount}</span>` : ''}
+        </button>
+      </nav>
+    ` : ''}
   `;
 
   document.querySelectorAll('[data-page]').forEach((button) => {
@@ -1742,7 +1868,7 @@ function renderApp() {
   if (copyAccountButton) {
     copyAccountButton.addEventListener('click', async () => {
       try {
-        await navigator.clipboard.writeText(state.pendingManualOrder.paymentDetails.accountNumber);
+        await copyText(state.pendingManualOrder.paymentDetails.accountNumber);
         showNotification('Account number copied.');
       } catch {
         showNotification('Unable to copy the account number on this device.', 'error');
@@ -1822,23 +1948,88 @@ function renderApp() {
     logoutButton.addEventListener('click', logout);
   }
 
+  const shareButton = document.querySelector('.share-app-button');
+  if (shareButton) {
+    shareButton.addEventListener('click', async () => {
+      const publicUrl = import.meta.env.VITE_PUBLIC_APP_URL || (isNativePlatform ? '' : window.location.origin);
+      try {
+        await shareContent({
+          title: state.site.name,
+          text: `${state.site.tagline} Order online or call ${state.site.phone}.`,
+          url: publicUrl || undefined,
+        });
+      } catch {
+        showNotification('Sharing was cancelled.', 'error');
+      }
+    });
+  }
+
+  configureChatPolling();
+}
+
+async function handleBackNavigation() {
+  if (state.page === 'admin-chat') {
+    await navigateToPage('admin');
+    return true;
+  }
+  if (state.page !== 'home') {
+    await navigateToPage('home');
+    return true;
+  }
+  return false;
+}
+
+function updateConnectivity(connected) {
+  const wasOnline = state.isOnline;
+  state.isOnline = Boolean(connected);
+  const banner = document.querySelector('#offline-banner');
+  if (banner) banner.hidden = state.isOnline;
+  document.body.classList.toggle('is-offline', !state.isOnline);
+
+  if (wasOnline && !state.isOnline) {
+    showNotification('You are offline. Some features are unavailable.', 'error');
+  } else if (!wasOnline && state.isOnline) {
+    showNotification('Back online.');
+    if (state.page === 'chat' || state.page === 'admin-chat') refreshChatData();
+  }
   configureChatPolling();
 }
 
 (async function init() {
-  await loadStorefront();
-  const token = readStorage('ashmie_auth_token', '');
-  if (token) {
-    const response = await fetch('/api/session', { headers: { Authorization: `Bearer ${token}` } });
-    if (response.ok) {
-      const data = await response.json();
-      state.user = data.user;
-      if (state.user.role === 'admin') await loadAdminOverview();
-      else await loadTrainingEnrollments();
-    } else {
-      localStorage.removeItem('ashmie_auth_token');
+  try {
+    await initializeNativeApp({
+      onBack: handleBackNavigation,
+      onDeepLink: handleNativePaymentReturn,
+      onConnectivity: updateConnectivity,
+      onAppState: async (isActive) => {
+        state.appActive = isActive;
+        configureChatPolling();
+        if (!isActive) return;
+        await checkPendingPayment();
+        if (state.page === 'chat' || state.page === 'admin-chat') await refreshChatData();
+      },
+    });
+
+    await loadAuthToken();
+    await loadStorefront();
+    const token = getAuthToken();
+    if (token) {
+      const response = await apiFetch('/api/session', { headers: { Authorization: `Bearer ${token}` } });
+      if (response.ok) {
+        const data = await readJson(response);
+        state.user = data.user;
+        if (state.user.role === 'admin') await loadAdminOverview();
+        else await loadTrainingEnrollments();
+      } else {
+        await clearAuthToken();
+      }
     }
+    await verifyPaystackCallback();
+  } catch (error) {
+    console.error('Ashmie failed to start cleanly:', error);
+  } finally {
+    renderApp();
+    await hideSplashScreen();
   }
-  await verifyPaystackCallback();
-  renderApp();
+  checkPendingPayment();
 })();

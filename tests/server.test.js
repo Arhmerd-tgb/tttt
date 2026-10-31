@@ -67,8 +67,9 @@ test('passwords are stored as hashes instead of plain text', async () => {
     const persistedStore = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
     const savedUser = persistedStore.users.find((user) => user.email === uniqueEmail);
     assert.ok(savedUser);
-    assert.equal(savedUser.password, createHash('sha256').update('secure123').digest('hex'));
+    assert.match(savedUser.password, /^scrypt\$[0-9a-f]{32}\$[0-9a-f]{128}$/);
     assert.notEqual(savedUser.password, 'secure123');
+    assert.notEqual(savedUser.password, createHash('sha256').update('secure123').digest('hex'));
   } finally {
     if (previousStore === null) fs.rmSync(dataFile, { force: true });
     else fs.writeFileSync(dataFile, previousStore);
@@ -158,9 +159,19 @@ test('POST /api/auth/signup creates a user and persists a project', async () => 
   assert.equal(paymentDetailsResponse.response.status, 200);
   assert.ok(paymentDetailsResponse.body.paymentDetails.accountName);
 
-  const projectResponse = await request(app, '/api/projects', {
+  const unauthenticatedProject = await request(app, '/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Anonymous project', description: 'Should be rejected' }),
+  });
+  assert.equal(unauthenticatedProject.response.status, 401);
+
+  const projectResponse = await request(app, '/api/projects', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${signupResponse.body.token}`,
+    },
     body: JSON.stringify({ name: 'Brand refresh', description: 'New positioning sprint' }),
   });
 
@@ -732,5 +743,154 @@ test('GET /api/projects recovers when the data store is corrupted', async () => 
     } else {
       fs.writeFileSync(dataFile, previous);
     }
+  }
+});
+
+test('responses set hardened security headers and disable API caching', async () => {
+  const app = createApp();
+  const { response } = await request(app, '/api/health');
+
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
+  assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
+  assert.match(response.headers.get('permissions-policy'), /camera=\(\)/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('x-powered-by'), null);
+});
+
+test('CORS only allows trusted app origins', async () => {
+  const app = createApp();
+
+  const allowed = await request(app, '/api/health', {
+    headers: { Origin: 'capacitor://localhost' },
+  });
+  assert.equal(allowed.response.headers.get('access-control-allow-origin'), 'capacitor://localhost');
+
+  const blocked = await request(app, '/api/health', {
+    headers: { Origin: 'https://evil.example' },
+  });
+  assert.equal(blocked.response.headers.get('access-control-allow-origin'), null);
+});
+
+test('sign-in attempts are rate limited per client', async () => {
+  const app = createApp();
+  let lastAttempt;
+
+  for (let attempt = 0; attempt < 31; attempt += 1) {
+    lastAttempt = await request(app, '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: createUniqueEmail(), password: 'wrong-password' }),
+    });
+  }
+
+  assert.equal(lastAttempt.response.status, 429);
+  assert.ok(Number(lastAttempt.response.headers.get('retry-after')) > 0);
+});
+
+test('oversized request bodies are rejected before parsing', async () => {
+  const app = createApp();
+  const { response } = await request(app, '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'user@ashmie.io', password: 'x'.repeat(600 * 1024) }),
+  });
+
+  assert.equal(response.status, 413);
+});
+
+test('sessions are stored as hashes and revoked on sign out', async () => {
+  const dataFile = path.join(process.cwd(), 'data', 'store.json');
+  const previousStore = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
+
+  try {
+    const app = createApp();
+    const login = await request(app, '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'ava@ashmie.io', password: 'demo123' }),
+    });
+    assert.equal(login.response.status, 200);
+    const token = login.body.token;
+
+    const persistedStore = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const session = persistedStore.sessions.find((entry) => entry.tokenHash === tokenHash);
+    assert.ok(session);
+    assert.ok(session.expiresAt > Date.now());
+    assert.equal(JSON.stringify(persistedStore.sessions).includes(token), false);
+
+    const authorized = await request(app, '/api/session', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(authorized.response.status, 200);
+
+    const logout = await request(app, '/api/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(logout.response.status, 200);
+
+    const revoked = await request(app, '/api/session', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(revoked.response.status, 401);
+  } finally {
+    if (previousStore === null) fs.rmSync(dataFile, { force: true });
+    else fs.writeFileSync(dataFile, previousStore);
+  }
+});
+
+test('administrators cannot store script URLs or mismatched image payloads', async () => {
+  const dataFile = path.join(process.cwd(), 'data', 'store.json');
+  const previousStore = fs.existsSync(dataFile) ? fs.readFileSync(dataFile, 'utf8') : null;
+  const previousAdminEmail = process.env.ADMIN_EMAIL;
+  const previousAdminPassword = process.env.ADMIN_PASSWORD;
+  const adminEmail = createUniqueEmail();
+  const adminPassword = 'image-admin-secure123';
+  process.env.ADMIN_EMAIL = adminEmail;
+  process.env.ADMIN_PASSWORD = adminPassword;
+
+  try {
+    const app = createApp();
+    const login = await request(app, '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: adminEmail, password: adminPassword }),
+    });
+    const authorization = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${login.body.token}`,
+    };
+    const baseProduct = { name: 'Unsafe Image Test', category: 'cakes', price: 15000, description: 'Image validation.' };
+
+    const scriptImage = await request(app, '/api/admin/products', {
+      method: 'POST',
+      headers: authorization,
+      body: JSON.stringify({ ...baseProduct, image: 'javascript:alert(1)' }),
+    });
+    assert.equal(scriptImage.response.status, 400);
+
+    const disguisedSvg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>').toString('base64');
+    const fakePng = await request(app, '/api/admin/products', {
+      method: 'POST',
+      headers: authorization,
+      body: JSON.stringify({ ...baseProduct, image: `data:image/png;base64,${disguisedSvg}` }),
+    });
+    assert.equal(fakePng.response.status, 400);
+
+    const validImage = await request(app, '/api/admin/products', {
+      method: 'POST',
+      headers: authorization,
+      body: JSON.stringify({ ...baseProduct, image: 'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&w=900&q=80' }),
+    });
+    assert.equal(validImage.response.status, 201);
+  } finally {
+    if (previousStore === null) fs.rmSync(dataFile, { force: true });
+    else fs.writeFileSync(dataFile, previousStore);
+    if (previousAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = previousAdminEmail;
+    if (previousAdminPassword === undefined) delete process.env.ADMIN_PASSWORD;
+    else process.env.ADMIN_PASSWORD = previousAdminPassword;
   }
 });

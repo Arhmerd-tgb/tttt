@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Ashmie</string>
+    <string name="title_activity_main">Ashmie</string>
+    <string name="package_name">com.ashmie.cakes</string>
+    <string name="custom_url_scheme">com.ashmie.cakes</string>
+</resources>

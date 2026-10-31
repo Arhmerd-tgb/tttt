@@ -4,14 +4,14 @@
       "id": "admin-bootstrap",
       "name": "Ashmie Administrator",
       "email": "admin@ashmie.io",
-      "password": "41e5653fc7aeb894026d6bb7b2db7f65902b454945fa8fd65a6327047b5277fb",
+      "password": "scrypt$f0be7e1ecd956896d2f8465d17bbee55$22a0f18790650fdd432ffc763bdd2efb3658e3c3985a86ea675995e95c040adbe7e2bb3cc0f723c9b94e73de8511e10863f7e5cb6d9c978956626d30c9c72bb4",
       "role": "admin"
     },
     {
       "id": "demo-user",
       "name": "Ava Morgan",
       "email": "ava@ashmie.io",
-      "password": "demo123",
+      "password": "scrypt$9cf7dad354ac12c477e330f2049b1acf$a73b338632cac65123449c8e5cebd2981325be765852469774c855ac425ecf864cf031f1285e3596919caa6560c26eaf09430061a456bcbd781b010627126e4e",
       "plan": "Growth",
       "role": "Product Lead"
     },
@@ -446,9 +446,102 @@
       "password": "b5692500175fad6bb2b306aa20ff58423c79b130ef310fb3caa924e0f28bc61d",
       "plan": "Starter",
       "role": "customer"
+    },
+    {
+      "id": "user-02315186-75a9-459b-aa50-9d1e51d30ace",
+      "name": "Lena Park",
+      "email": "user-1793393124685-340dffcc689298@ashmie.io",
+      "password": "scrypt$795157cf2cf7937b20f8ac7c12a58751$c66393279ed5a2fc4994b68c5953858b503e4328dc6c8f37a6ecb0ab4cea2ce4dd7e48b8f07d2acc115f122d0aa1b2899e38e5ae6d05957d05e6d91d12213c78",
+      "plan": "Starter",
+      "role": "customer"
+    },
+    {
+      "id": "user-ec67d94e-a7d4-4fd7-962e-c01299f046bb",
+      "name": "Lena Park",
+      "email": "user-1793395627535-0104f3ec4174f@ashmie.io",
+      "password": "scrypt$a10b82e0136af9517e58387c51c99b06$c236321171286c09cb9657cb47ba06902a5301ee48b73e7021b74718b7f203277d7bffde2a250ce6929bd1a605ff9d30d86f00e7a190c09182e1be173c54e614",
+      "plan": "Starter",
+      "role": "customer"
+    },
+    {
+      "id": "user-593d74e9-8ab8-4f14-9d7b-9414af6a43b6",
+      "name": "Lena Park",
+      "email": "user-1793395671509-1f372345e9c5d8@ashmie.io",
+      "password": "scrypt$d1f17b0f0d7cade1dd1176e315e5232b$f27ff11e7b58cde73090791f2a7388219ac8b43f5bbbe50a6595eccaa3535cdcce1bc5791aa6cffb7d124565ab01706b2d105011032df3059bc7ae990c640d49",
+      "plan": "Starter",
+      "role": "customer"
+    },
+    {
+      "id": "user-8cb53cc2-8bc6-4bd9-a537-b8ddfa0e9d87",
+      "name": "Lena Park",
+      "email": "user-1793396506538-3a01340d0d0cb8@ashmie.io",
+      "password": "scrypt$729ae9b28cc2ee49873a85349d615025$5f7edcb0990607939e796a0a4c032c5a2f74ad358e239ae64003f247ef30001223d18153df73d0e500f5637e5758d0f7074f30b05c2de7292cdbe9218ac21b15",
+      "plan": "Starter",
+      "role": "customer"
+    },
+    {
+      "id": "user-a5938a51-61d7-4440-8cf1-037172a49ff1",
+      "name": "Lena Park",
+      "email": "user-1793423181710-22a6fa2a21911@ashmie.io",
+      "password": "scrypt$8044960fae036c917ba8a44e04408bd6$c1c9425779c1a972c25c24dfcd0b988c7d5dd8512a3ed756efb0162d433da4d774fe34c18f01686e61f6c22291bdfa9a9eb04eb209913f47d69af6de7524c3c4",
+      "plan": "Starter",
+      "role": "customer"
+    },
+    {
+      "id": "user-580a78ff-d8c7-4b41-86bd-605207d204d2",
+      "name": "Lena Park",
+      "email": "user-1793423472497-998222a3567bd8@ashmie.io",
+      "password": "scrypt$9c56e70bf366b52ab4df53d7c29a16df$8238108d4f3c72a26432f1fbb5c118bd4feadac5a183d0c6073e77aede41e0f3b4ab4129c93ae86d8bc27a8f497c74077288c61da6e61beb8fdec2b8d262710c",
+      "plan": "Starter",
+      "role": "customer"
     }
   ],
   "projects": [
+    {
+      "id": "project-1793423476012",
+      "name": "Brand refresh",
+      "description": "New positioning sprint",
+      "owner": "user-580a78ff-d8c7-4b41-86bd-605207d204d2",
+      "status": "New",
+      "progress": 25,
+      "due": "This week"
+    },
+    {
+      "id": "project-1793423183719",
+      "name": "Brand refresh",
+      "description": "New positioning sprint",
+      "owner": "user-a5938a51-61d7-4440-8cf1-037172a49ff1",
+      "status": "New",
+      "progress": 25,
+      "due": "This week"
+    },
+    {
+      "id": "project-1793396508195",
+      "name": "Brand refresh",
+      "description": "New positioning sprint",
+      "owner": "user-8cb53cc2-8bc6-4bd9-a537-b8ddfa0e9d87",
+      "status": "New",
+      "progress": 25,
+      "due": "This week"
+    },
+    {
+      "id": "project-1793395672108",
+      "name": "Brand refresh",
+      "description": "New positioning sprint",
+      "owner": "user-593d74e9-8ab8-4f14-9d7b-9414af6a43b6",
+      "status": "New",
+      "progress": 25,
+      "due": "This week"
+    },
+    {
+      "id": "project-1793395628119",
+      "name": "Brand refresh",
+      "description": "New positioning sprint",
+      "owner": "user-ec67d94e-a7d4-4fd7-962e-c01299f046bb",
+      "status": "New",
+      "progress": 25,
+      "due": "This week"
+    },
     {
       "id": "project-1791225690463",
       "name": "Brand refresh",
@@ -1167,6 +1260,80 @@
       "attachment": null,
       "createdAt": "2026-10-05T18:22:19.791Z",
       "readByAdmin": true
+    }
+  ],
+  "sessions": [
+    {
+      "tokenHash": "8097afbf46a7d747cfa5b6d6a31ee830c66538f04e8e78792659ef7ce8f3778e",
+      "userId": "demo-user",
+      "createdAt": "2026-10-30T20:45:22.483Z",
+      "expiresAt": 1795985122483
+    },
+    {
+      "tokenHash": "57b4731316cf817fd2c4c656e2b269c690dd91514cd70ff3e96f1fbda254c235",
+      "userId": "user-02315186-75a9-459b-aa50-9d1e51d30ace",
+      "createdAt": "2026-10-30T20:45:25.074Z",
+      "expiresAt": 1795985125074
+    },
+    {
+      "tokenHash": "eb50bae8d2a1f7d9d03fa7499dd332cf914d580339c94f4fe51e7cd889c767c3",
+      "userId": "demo-user",
+      "createdAt": "2026-10-30T21:27:06.919Z",
+      "expiresAt": 1795987626919
+    },
+    {
+      "tokenHash": "3f4a549d37febaa568816a79aeda0440b13bdb66de53ada519739faa05e71fff",
+      "userId": "user-ec67d94e-a7d4-4fd7-962e-c01299f046bb",
+      "createdAt": "2026-10-30T21:27:07.653Z",
+      "expiresAt": 1795987627653
+    },
+    {
+      "tokenHash": "1f5ea96b356336a2854ba527f1f44d2c98aaffbab510807c79123c2ea8beba8b",
+      "userId": "demo-user",
+      "createdAt": "2026-10-30T21:27:50.818Z",
+      "expiresAt": 1795987670818
+    },
+    {
+      "tokenHash": "acba7f228155823dd170d79054fd7683475c0ba04a9927b9d9c49dc42fc29e22",
+      "userId": "user-593d74e9-8ab8-4f14-9d7b-9414af6a43b6",
+      "createdAt": "2026-10-30T21:27:51.631Z",
+      "expiresAt": 1795987671631
+    },
+    {
+      "tokenHash": "8561493fb33bbcb20be81a5bc31a2eb20b9becb67d43df4e292afcaaac4513e6",
+      "userId": "demo-user",
+      "createdAt": "2026-10-30T21:41:44.964Z",
+      "expiresAt": 1795988504964
+    },
+    {
+      "tokenHash": "02cd08a7e23df9a217eb947c8ca7a9062708324293f3873abe4d8a2abe0ebac5",
+      "userId": "user-8cb53cc2-8bc6-4bd9-a537-b8ddfa0e9d87",
+      "createdAt": "2026-10-30T21:41:46.945Z",
+      "expiresAt": 1795988506945
+    },
+    {
+      "tokenHash": "31440450315d9774fdbff084e9c3b82fe940bc1819c49787c70db777aae466cb",
+      "userId": "demo-user",
+      "createdAt": "2026-10-31T05:06:19.564Z",
+      "expiresAt": 1796015179564
+    },
+    {
+      "tokenHash": "64b3f456e0873116dce2bfc1ba4848bacc521d917b3a5d796dba17053255e3cf",
+      "userId": "user-a5938a51-61d7-4440-8cf1-037172a49ff1",
+      "createdAt": "2026-10-31T05:06:22.212Z",
+      "expiresAt": 1796015182212
+    },
+    {
+      "tokenHash": "78a3ec9052dc4be14a23240b9d5dbec6a422e3647977641e1af1736fe2358a63",
+      "userId": "demo-user",
+      "createdAt": "2026-10-31T05:11:09.202Z",
+      "expiresAt": 1796015469202
+    },
+    {
+      "tokenHash": "67f8fbf76869b16d45555bbf0fbb1c4b6e1742a439e116a75bad2ba9f0c71aac",
+      "userId": "user-580a78ff-d8c7-4b41-86bd-605207d204d2",
+      "createdAt": "2026-10-31T05:11:13.503Z",
+      "expiresAt": 1796015473503
     }
   ],
   "adminSignupCodeHash": "49b68c99e3b1f8e72bc7384cbf7b2b1a941d1a445215b02e31dc6f7eed760c25"
